@@ -1,0 +1,7 @@
+[package]
+name = "serial-experiments-gba"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+agb = "0.20.3"
