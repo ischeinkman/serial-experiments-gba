@@ -1,5 +1,5 @@
+use agb::external::critical_section::{self, CriticalSection, Mutex};
 use core::cell::Cell;
-use agb::external::critical_section::{self, Mutex};
 
 #[inline(always)]
 pub const fn read_bit(value: u16, n: u8) -> bool {
@@ -47,5 +47,70 @@ impl<T> GbaCell<T> {
                 Err(value)
             }
         })
+    }
+}
+
+impl<T: Copy> GbaCell<T> {
+    pub fn get_copy(&self) -> T {
+        critical_section::with(|cs| self.inner.borrow(cs).get())
+    }
+}
+
+impl<T: Default> GbaCell<T> {
+    pub fn lock<F, R>(&self, cb: F) -> R
+    where
+        F: FnOnce(&T) -> R,
+    {
+        critical_section::with(|cs| self.lock_in(cs, cb))
+    }
+    pub fn lock_in<F, R>(&self, cs: CriticalSection, cb: F) -> R
+    where
+        F: FnOnce(&T) -> R,
+    {
+        let sentinel = T::default();
+        let val = self.inner.borrow(cs).replace(sentinel);
+        let ret = cb(&val);
+        self.inner.borrow(cs).set(val);
+        ret
+    }
+    pub fn lock_mut_in<F, R>(&self, cs: CriticalSection, cb: F) -> R
+    where
+        F: FnOnce(&mut T) -> R,
+    {
+        let sentinel = T::default();
+        let mut val = self.inner.borrow(cs).replace(sentinel);
+        let ret = cb(&mut val);
+        self.inner.borrow(cs).set(val);
+        ret
+    }
+    pub fn lock_mut<F, R>(&self, cb: F) -> R
+    where
+        F: FnOnce(&mut T) -> R,
+    {
+        critical_section::with(|cs| self.lock_mut_in(cs, cb))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agb::Gba;
+    #[test_case]
+    fn test_bitfuncs(_gba: &mut Gba) {
+        for n in 0..16 {
+            let set = write_bit(0, n, true);
+            assert_eq!(1 << n, set);
+            assert_eq!(read_bit(set, n), true);
+            assert_eq!(write_bit(set, n, false), 0);
+        }
+    }
+    #[test_case]
+    fn test_bitfuncs_u8(_gba: &mut Gba) {
+        for n in 0..8 {
+            let set = write_bit_u8(0, n, true);
+            assert_eq!(1 << n, set);
+            assert_eq!(read_bit_u8(set, n), true);
+            assert_eq!(write_bit_u8(set, n, false), 0);
+        }
     }
 }
