@@ -5,13 +5,11 @@ use agb::external::critical_section::{CriticalSection, Mutex};
 use alloc::boxed::Box;
 use alloc::vec;
 
-use super::PlayerId;
-
 const NO_DATA: u16 = u16::MAX;
 
 /// Ringbuffer for data transfers in multiplayer mode when using the "bulk
 /// transfer" feature.
-pub struct TransferBuffer {
+pub struct Ringbuffer {
     /// The head of the memory block. Should always point to an allocation of exactly `4 * self.bufflen` elements.
     buffer: *mut u16,
     /// The maximum number of elements the buffer can store *per player*.
@@ -36,19 +34,19 @@ pub struct TransferBuffer {
 ///
 /// All reads & writes to the data in this buffer are protected via critical
 /// sections, meaning no matter what only 1 code path can touch it at a time.
-unsafe impl Sync for TransferBuffer {}
+unsafe impl Sync for Ringbuffer {}
 /// #SAFETY
 ///
 /// All reads & writes to the data in this buffer are protected via critical
 /// sections, meaning no matter what only 1 code path can touch it at a time.
-unsafe impl Send for TransferBuffer {}
+unsafe impl Send for Ringbuffer {}
 
-impl Default for TransferBuffer {
+impl Default for Ringbuffer {
     fn default() -> Self {
-        TransferBuffer::empty()
+        Ringbuffer::empty()
     }
 }
-impl Drop for TransferBuffer {
+impl Drop for Ringbuffer {
     fn drop(&mut self) {
         if self.buffer.is_null() {
             return;
@@ -60,11 +58,11 @@ impl Drop for TransferBuffer {
     }
 }
 
-impl TransferBuffer {
-    /// Constructs an empty, nonfunctional `TransferBuffer` for use as a
+impl Ringbuffer {
+    /// Constructs an empty, nonfunctional `Ringbuffer` for use as a
     /// sentinel.
     ///
-    /// Equivalent to `TransferBuffer::new(&mut [])` but usable in a `const`
+    /// Equivalent to `Ringbuffer::new(0)` but usable in a `const`
     /// context.  
     pub const fn empty() -> Self {
         Self {
@@ -74,13 +72,13 @@ impl TransferBuffer {
             write_idx: Mutex::new(Cell::new(0)),
         }
     }
-    /// Checks whether or not this is a real `TransferBuffer` or just an empty
+    /// Checks whether or not this is a real `RingBuffer` or just an empty
     /// placeholder.
     pub const fn is_placeholder(&self) -> bool {
         self.bufflen == 0
     }
 
-    /// Constructs a new multiplayer bulk transfer buffer with the given capacity (per player).
+    /// Constructs a new ringbuffer with the given capacity.
     pub fn new(cap: usize) -> Self {
         let data = vec![NO_DATA; cap * 4].into_boxed_slice();
 
@@ -91,24 +89,7 @@ impl TransferBuffer {
             write_idx: Mutex::new(Cell::new(0)),
         }
     }
-    fn player_buffer_start(&self, player: PlayerId) -> *mut u16 {
-        // #SAFETY
-        //
-        // We guarantee at creation time that `self.buffer` points to an
-        // allocation that is exactly `4 * self.bufflen` long, so the resulting
-        // pointer is always in bounds.
-
-        unsafe { self.buffer.add(self.bufflen * player as usize) }
-    }
-    pub fn push(
-        &self,
-        p0: u16,
-        p1: u16,
-        p2: u16,
-        p3: u16,
-        _flags: u8,
-        cs: CriticalSection,
-    ) -> Result<(), ()> {
+    pub fn push(&self, p0: u16, cs: CriticalSection) -> Result<(), ()> {
         let raw_ridx = self.read_idx.borrow(cs).get();
         let raw_widx = self.write_idx.borrow(cs).get();
         if is_full(raw_ridx, raw_widx, self.bufflen) {
@@ -116,10 +97,7 @@ impl TransferBuffer {
         }
         let widx = raw_widx % self.bufflen;
         unsafe {
-            self.player_buffer_start(PlayerId::P0).add(widx).write(p0);
-            self.player_buffer_start(PlayerId::P1).add(widx).write(p1);
-            self.player_buffer_start(PlayerId::P2).add(widx).write(p2);
-            self.player_buffer_start(PlayerId::P3).add(widx).write(p3);
+            self.buffer.add(widx).write(p0);
         }
         self.write_idx
             .borrow(cs)
@@ -127,42 +105,24 @@ impl TransferBuffer {
         //TODO: Deal with flags
         Ok(())
     }
-    pub fn pop(&self, cs: CriticalSection) -> [u16; 4] {
+    pub fn pop(&self, cs: CriticalSection) -> Option<u16> {
         let raw_ridx = self.read_idx.borrow(cs).get();
         let raw_widx = self.write_idx.borrow(cs).get();
         if is_empty(raw_ridx, raw_widx, self.bufflen) {
-            return [NO_DATA; 4];
+            return None;
         }
         let ridx = raw_ridx % self.bufflen;
         self.read_idx
             .borrow(cs)
             .replace((raw_ridx + 1) % (2 * self.bufflen));
 
-        unsafe {
-            [
-                self.player_buffer_start(PlayerId::P0).add(ridx).read(),
-                self.player_buffer_start(PlayerId::P1).add(ridx).read(),
-                self.player_buffer_start(PlayerId::P2).add(ridx).read(),
-                self.player_buffer_start(PlayerId::P3).add(ridx).read(),
-            ]
-        }
+        unsafe { Some(self.buffer.add(ridx).read()) }
     }
-    /// Attempts to read multiple values from the multiplayer buffer in bulk
-    /// into the provided buffers.
+    /// Attempts to read multiple values from the buffer in bulk
+    /// into the provided buffer.
     ///
-    /// Returns the number of values read per player into each buffer.
-    pub fn read_bulk(&self, buffers: &mut [&mut [u16]; 4], cs: CriticalSection<'_>) -> [usize; 4] {
-        PlayerId::ALL.map(move |pid| {
-            let buffer = &mut buffers.as_mut()[pid as usize];
-            self.read_bulk_for_inner(cs, pid, buffer.as_mut())
-        })
-    }
-    fn read_bulk_for_inner(
-        &self,
-        cs: CriticalSection<'_>,
-        player: PlayerId,
-        outbuff: &mut [u16],
-    ) -> usize {
+    /// Returns the number of values read.
+    pub fn read_bulk(&self, outbuff: &mut [u16], cs: CriticalSection<'_>) -> usize {
         let raw_ridx = self.read_idx.borrow(cs).get();
         let raw_widx = self.write_idx.borrow(cs).get();
         if is_empty(raw_ridx, raw_widx, self.bufflen) {
@@ -170,8 +130,7 @@ impl TransferBuffer {
         }
         let mapped_ridx = raw_ridx % self.bufflen;
         let mapped_widx = raw_widx % self.bufflen;
-        let buffer = self.player_buffer_start(player);
-        let buffer = unsafe { slice::from_raw_parts(buffer as *const _, self.bufflen) };
+        let buffer = unsafe { slice::from_raw_parts(self.buffer as *const _, self.bufflen) };
         if mapped_ridx < mapped_widx {
             let to_read = (mapped_widx - mapped_ridx).min(outbuff.len());
             outbuff[..to_read].copy_from_slice(&buffer[mapped_ridx..(mapped_ridx + to_read)]);
@@ -188,6 +147,17 @@ impl TransferBuffer {
                 .copy_from_slice(&buffer[..to_read_from_second]);
             to_read_from_first + to_read_from_second
         }
+    }
+    pub fn write_bulk(&self, buff : &[u16], cs : CriticalSection<'_>) -> usize {
+        //TODO: Implement this
+        let mut retvl = 0; 
+        for next in buff {
+            if self.push(*next, cs).is_err() {
+                return retvl; 
+            }
+            retvl += 1; 
+        }
+        retvl
     }
 }
 
@@ -222,59 +192,28 @@ mod tests {
 
     #[test_case]
     fn verify_size(_gba: &mut Gba) {
-        assert_eq!(
-            mem::size_of::<TransferBuffer>(),
-            4 * mem::size_of::<usize>()
-        )
+        assert_eq!(mem::size_of::<Ringbuffer>(), 4 * mem::size_of::<usize>())
     }
-
     #[test_case]
     fn test_buffer(_gba: &mut Gba) {
         const BUFFER_SIZE: usize = 0x8F;
-        const SENTINEL: u16 = 0xFEEF;
 
-        let buffer = unsafe { TransferBuffer::new(BUFFER_SIZE) };
+        let buffer = Ringbuffer::new(BUFFER_SIZE);
         assert_eq!(buffer.bufflen, BUFFER_SIZE);
 
         for n in 0..(BUFFER_SIZE * 2) {
-            let (p0, p1, p2, p3, flags) = (
-                (n as u16) + 0x0000,
-                (n as u16) + 0x1000,
-                (n as u16) + 0x2000,
-                (n as u16) + 0x3000,
-                0x00,
-            );
+            let p0 = (n as u16) + 0x3000;
             critical_section::with(|cs| {
-                let res = buffer.push(p0, p1, p2, p3, flags, cs);
+                let res = buffer.push(p0, cs);
                 assert_eq!(res.is_err(), n >= BUFFER_SIZE, "N = {n}");
             });
         }
         critical_section::with(|cs| {
             for n in 0..BUFFER_SIZE {
                 let next = buffer.pop(cs);
-                assert_eq!(
-                    next,
-                    [
-                        (n as u16) + 0x0000,
-                        (n as u16) + 0x1000,
-                        (n as u16) + 0x2000,
-                        (n as u16) + 0x3000,
-                    ]
-                );
+                assert_eq!(next, Some((n as u16) + 0x3000));
             }
-            assert_eq!(buffer.pop(cs), [NO_DATA; 4]);
-            unsafe {
-                let raw_mem = slice::from_raw_parts(buffer.buffer as *const _, buffer.bufflen * 4);
-                for rawidx in 0..(BUFFER_SIZE * 4) {
-                    let player = (rawidx / BUFFER_SIZE) as u16;
-                    let offset = (rawidx % BUFFER_SIZE) as u16;
-                    let expected = (0x1000u16 * player) + offset;
-                    assert_eq!(
-                        raw_mem[rawidx], expected,
-                        "Error at index: {rawidx} (Player = {player}, offset = {offset})"
-                    );
-                }
-            }
-        })
+            assert_eq!(buffer.pop(cs), None);
+        });
     }
 }

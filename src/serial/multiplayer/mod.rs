@@ -1,28 +1,32 @@
+use super::*;
+use crate::logs::println;
+
+use agb::interrupt::InterruptHandler;
+use bulk::{BulkInitError, BulkMultiplayer};
+
 use core::{marker::PhantomData, mem};
 
-use crate::logs::println;
-use crate::utils::GbaCell;
-use agb::external::critical_section::{self, CriticalSection};
-use agb::interrupt::{add_interrupt_handler, Interrupt, InterruptHandler};
-use buffer::TransferBuffer;
 mod buffer;
-use super::*;
+mod ringbuf;
+mod bulk;
+mod registers;
+use registers::MultiplayerCommReg;
+
+const SENTINEL: u16 = u16::MAX;
 
 #[repr(u8)]
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy, Debug, Default)]
 pub enum PlayerId {
     #[default]
-    Parent = 0,
+    P0 = 0,
     P1 = 1,
     P2 = 2,
     P3 = 3,
 }
 
 impl PlayerId {
-    pub const ALL: [PlayerId; 4] = [PlayerId::Parent, PlayerId::P1, PlayerId::P2, PlayerId::P3];
+    pub const ALL: [PlayerId; 4] = [PlayerId::P0, PlayerId::P1, PlayerId::P2, PlayerId::P3];
 }
-
-static BUFFER_SLOT: GbaCell<TransferBuffer<'static>> = GbaCell::new(TransferBuffer::placeholder());
 
 pub struct MultiplayerSerial<'a> {
     _handle: PhantomData<&'a mut Serial>,
@@ -32,8 +36,30 @@ pub struct MultiplayerSerial<'a> {
     rate: BaudRate,
 }
 
+fn enter_multiplayer(rate: BaudRate) -> Result<(), MultiplayerError> {
+    let rcnt = RcntWrapper::get();
+    let siocnt = MultiplayerSiocnt::get();
+
+    rcnt.set_mode(SerialMode::Multiplayer);
+    siocnt.set_mode(SerialMode::Multiplayer);
+    siocnt.set_baud_rate(rate);
+
+    if siocnt.error_flag() {
+        return Err(MultiplayerError::FailedOkayCheck);
+    }
+    Ok(())
+}
+/// Tells the other connected GBAs that we aren't ready to transfer yet.
+///
+/// This is accomplished by changing to a different Serial Mode that doesn't
+/// set the SD pin to HIGH.
+fn mark_unready() {
+    // Joybus mode has SD low always (source: https://mgba-emu.github.io/gbatek/#sio-joy-bus-mode)
+    RcntWrapper::get().set_mode(SerialMode::Joybus);
+}
+
 impl<'a> MultiplayerSerial<'a> {
-    pub fn new(_handle: &'a mut Serial, rate: BaudRate) -> Result<Self, InitializationError> {
+    pub fn new(_handle: &'a mut Serial, rate: BaudRate) -> Result<Self, MultiplayerError> {
         let mut retvl = Self {
             _handle: PhantomData,
             buffer_interrupt: None,
@@ -45,65 +71,21 @@ impl<'a> MultiplayerSerial<'a> {
         Ok(retvl)
     }
 
-    fn initialize(&mut self) -> Result<(), InitializationError> {
-        // FROM https://rust-console.github.io/gbatek-gbaonly/#siomultiplayermode:
-        let rcnt = RcntWrapper::new();
-        let siocnt = MultiplayerSiocnt::get();
-
-        rcnt.set_mode(SerialMode::Multiplayer);
-        siocnt.set_mode(SerialMode::Multiplayer);
-        siocnt.set_baud_rate(self.rate);
-
-        if siocnt.error_flag() {
-            return Err(InitializationError::FailedOkayCheck);
-        }
-        let is_parent = siocnt.is_parent();
+    fn initialize(&mut self) -> Result<(), MultiplayerError> {
+        enter_multiplayer(self.rate)?;
+        let is_parent = MultiplayerSiocnt::get().is_parent();
         self.is_parent = is_parent;
         Ok(())
     }
-    pub fn enable_buffer_interrupt(
-        &mut self,
-        buffer: &'static mut [u16],
-    ) -> Result<(), InitializationError> {
-        let nbuff = TransferBuffer::new(buffer);
-        if BUFFER_SLOT
-            .swap_if(nbuff, |old| old.is_placeholder())
-            .is_err()
-        {
-            return Err(InitializationError::AlreadyInitialized);
-        }
-        self.buffer_interrupt =
-            unsafe { Some(add_interrupt_handler(Interrupt::Serial, on_interrupt)) };
-        self.enable_interrupt(true);
-        Ok(())
-    }
-    pub fn disable_buffer_interrupt(&mut self) {
-        self.enable_interrupt(false);
-        self.buffer_interrupt = None;
-        BUFFER_SLOT.swap(TransferBuffer::placeholder());
+
+    pub fn enable_bulk_mode(self, buffer_cap: usize) -> Result<BulkMultiplayer<'a>, BulkInitError> {
+        BulkMultiplayer::new(self, buffer_cap)
     }
     pub fn write_send_reg(&mut self, data: u16) {
         SIOMLT_SEND.write(data)
     }
     pub fn read_player_reg_raw(&self, player: PlayerId) -> Option<u16> {
         MultiplayerCommReg::get(player).read()
-    }
-
-    pub fn is_in_bulk_mode(&self) -> bool {
-        self.buffer_interrupt.is_some()
-    }
-
-    pub fn read_bulk(
-        &mut self,
-        buffers: &mut [&mut [u16]; 4],
-    ) -> Result<[usize; 4], InitializationError> {
-        if !self.is_in_bulk_mode() {
-            return Err(InitializationError::NotInBulkMode);
-        }
-        critical_section::with(|cs| {
-            let tbuf = BUFFER_SLOT.swap(TransferBuffer::placeholder());
-            Ok(tbuf.read_bulk(buffers, cs))
-        })
     }
 
     pub fn initialize_id(&mut self) -> Result<(), TransferError> {
@@ -183,57 +165,64 @@ impl<'a> MultiplayerSerial<'a> {
     /// This is accomplished by changing to a different Serial Mode that doesn't
     /// set the SD pin to HIGH.
     pub fn mark_unready(&mut self) {
-        // Joybus mode has SD low always (source: https://mgba-emu.github.io/gbatek/#sio-joy-bus-mode)
-        RcntWrapper::get().set_mode(SerialMode::Joybus);
+        mark_unready()
     }
 
     pub fn id(&self) -> Option<PlayerId> {
         self.playerid
     }
 }
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub enum InitializationError {
-    /// The "error" flag was tripped in the SIOCNT register.
-    FailedOkayCheck,
-    /// The communication memory buffer had a length not divisible by 4
-    InvalidBufferLength,
-    /// The serial port has already been initialized in multiplayer mode
-    AlreadyInitialized,
-    /// The Multiplayer handle has not been configured for bulk interrupt-based
-    /// transfer
-    NotInBulkMode,
-}
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum TransferError {
-    /// The "error" flag was tripped in the SIOCNT register.
-    FailedOkayCheck,
     /// Not all GBAs were ready for the transfer (though the transfer was still attempted)
     FailedReadyCheck,
     /// There was a transfer already in progress when the new one was requested.
     AlreadyInProgress,
+    /// The "error" flag was tripped in the SIOCNT register.
+    FailedOkayCheck,
+}
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum MultiplayerError {
+    /// The "error" flag was tripped in the SIOCNT register.
+    FailedOkayCheck,
+    /// Not all GBAs were ready for the transfer (though the transfer was still attempted)
+    FailedReadyCheck,
 }
 
+#[repr(u8)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy, Debug, Default)]
+pub enum BaudRate {
+    #[default]
+    B9600 = 0,
+    B38400 = 1,
+    B57600 = 2,
+    B115200 = 3,
+}
+
+/// Newtype extention wrapper around the Serial I/O Control register with extra
+/// methods for multiplayer mode.
+///
+/// # GBATEK Table of Bits
+/// | Bit |  Explanation       | Notes |
+/// | :-- | :--                | :--   |
+/// | 0-1 | Baud Rate          | (0-3: 9600,38400,57600,115200 bps)
+/// | 2   | SI-Terminal        | (0=Parent, 1=Child) (Read Only)
+/// | 3   | SD-Terminal        | (0=Bad connection, 1=All GBAs Ready) (Read Only)
+/// | 4-5 | Multi-Player ID    | (Only valid after 1st transfer) (Read Only)
+/// | 6   | Multi-Player Error | (0=Normal, 1=Error) (Read Only)
+/// | 7   | Start/Busy Bit     | (0=Inactive, 1=Start/Busy) (Read Only for Slaves)
+/// | 8-11| Not used           | (R/W, should be 0)
+/// | 12  | Must be "0" for Multi-Player mode |
+/// | 13  | Must be "1" for Multi-Player mode |
+/// | 14  | IRQ Enable         | (0=Disable, 1=Want IRQ upon completion)
+/// | 15  | Not used           | (Read only, always 0)
 pub struct MultiplayerSiocnt {
     inner: SiocntWrapper,
 }
 
 method_wraps!(MultiplayerSiocnt, inner, SiocntWrapper);
 
-/*
-  Bit   Expl.
-  0-1   Baud Rate     (0-3: 9600,38400,57600,115200 bps)
-  2     SI-Terminal   (0=Parent, 1=Child)                  (Read Only)
-  3     SD-Terminal   (0=Bad connection, 1=All GBAs Ready) (Read Only)
-  4-5   Multi-Player ID     (0=Parent, 1-3=1st-3rd child)  (Read Only)
-  6     Multi-Player Error  (0=Normal, 1=Error)            (Read Only)
-  7     Start/Busy Bit      (0=Inactive, 1=Start/Busy) (Read Only for Slaves)
-  8-11  Not used            (R/W, should be 0)
-  12    Must be "0" for Multi-Player mode
-  13    Must be "1" for Multi-Player mode
-  14    IRQ Enable          (0=Disable, 1=Want IRQ upon completion)
-  15    Not used            (Read only, always 0)
-*/
 impl MultiplayerSiocnt {
     const fn new() -> Self {
         Self {
@@ -255,17 +244,48 @@ impl MultiplayerSiocnt {
         self.write(new)
     }
 
+    /// Returns whether or not this unit is NOT [PlayerId::P0], aka the "parent"
+    /// unit.
+    ///
+    /// If this is true, then this GBA unit is NOT responsible for calling
+    /// [Self::start_transfer] in order to initiate each data transfer between
+    /// units; instead, it must wait for the parent to transfer each word across
+    /// the link. Both the parent & children can listen for completion using the
+    /// Serial interrupt.
+    ///
+    /// # Notes
+    /// Unlike [Self::id], this function can be called before any data transfers
+    /// have happened yet.
     pub fn is_child(&self) -> bool {
         self.read_bit(2)
     }
 
+    /// Returns whether or not this unit is [PlayerId::P0], aka the "parent"
+    /// unit.
+    ///
+    /// If this is true, then this GBA unit is responsible for calling
+    /// [Self::start_transfer] in order to initiate each data transfer between
+    /// units.
+    ///
+    /// # Notes
+    /// Unlike [Self::id], this function can be called before any data transfers
+    /// have happened yet.
     pub fn is_parent(&self) -> bool {
         !self.is_child()
     }
+
+    /// Checks whether or not all GBAs in the current link session are in
+    /// multiplayer mode and therefore ready to receive more data.
     pub fn gbas_ready(&self) -> bool {
         self.read_bit(3)
     }
 
+    /// Reads the current Player ID bits.
+    ///
+    /// # Notes
+    /// This value is only valid after the first successful transfer! Before the
+    /// first transfer the only ID information available is whether or not this
+    /// unit is Player 0, available via [Self::is_parent] and [Self::is_child].
     pub fn id(&self) -> PlayerId {
         let regval = self.read();
         let raw = ((regval & (3 << 4)) >> 4) as u8;
@@ -276,67 +296,21 @@ impl MultiplayerSiocnt {
         self.read_bit(6)
     }
 
+    /// Initiates a data transfer.
+    ///
+    /// # Notes
+    /// * This function should only be called by Player 0, AKA the "parent" GBA
+    ///   unit. This can be checked using the [Self::is_parent] and
+    ///   [Self::is_child] functions.
+    /// * This function will immediately write the "start transfer" bit into the
+    ///   register without verifying that all other GBAs are ready.
+    ///
     pub fn start_transfer(&self) {
         self.write_bit(7, true)
     }
+
+    /// Reads whether or not a transfer is currently in progress.
     pub fn busy(&self) -> bool {
         self.read_bit(7)
     }
-}
-const SIOMULTI0: VolAddress<u16, Safe, Safe> = unsafe { VolAddress::new(0x4000120) };
-const SIOMULTI1: VolAddress<u16, Safe, Safe> = unsafe { VolAddress::new(0x4000122) };
-const SIOMULTI2: VolAddress<u16, Safe, Safe> = unsafe { VolAddress::new(0x4000124) };
-const SIOMULTI3: VolAddress<u16, Safe, Safe> = unsafe { VolAddress::new(0x4000126) };
-
-pub struct MultiplayerCommReg {
-    reg: VolAddress<u16, Safe, Safe>,
-}
-
-impl MultiplayerCommReg {
-    pub const PARENT: Self = MultiplayerCommReg::new(PlayerId::Parent);
-    pub const P1: Self = MultiplayerCommReg::new(PlayerId::P1);
-    pub const P2: Self = MultiplayerCommReg::new(PlayerId::P2);
-    pub const P3: Self = MultiplayerCommReg::new(PlayerId::P3);
-    pub const ALL: [Self; 4] = [Self::PARENT, Self::P1, Self::P2, Self::P3];
-    const fn new(player_id: PlayerId) -> Self {
-        let reg = match player_id {
-            PlayerId::Parent => SIOMULTI0,
-            PlayerId::P1 => SIOMULTI1,
-            PlayerId::P2 => SIOMULTI2,
-            PlayerId::P3 => SIOMULTI3,
-        };
-        Self { reg }
-    }
-    pub const fn get(player_id: PlayerId) -> &'static Self {
-        &Self::ALL[player_id as usize]
-    }
-
-    pub fn read(&self) -> Option<u16> {
-        let raw = self.raw_read();
-        if raw == 0xFFFF {
-            None
-        } else {
-            Some(raw)
-        }
-    }
-    pub fn raw_read(&self) -> u16 {
-        self.reg.read()
-    }
-    pub fn is_transfering(&self) -> bool {
-        self.raw_read() == 0xFFFF
-    }
-}
-
-fn on_interrupt(cs: CriticalSection<'_>) {
-    let siocnt = MultiplayerSiocnt::get();
-    let flags = (siocnt.read() & 0xFF) as u8;
-    let p0 = MultiplayerCommReg::get(PlayerId::Parent).raw_read();
-    let p1 = MultiplayerCommReg::get(PlayerId::P1).raw_read();
-    let p2 = MultiplayerCommReg::get(PlayerId::P2).raw_read();
-    let p3 = MultiplayerCommReg::get(PlayerId::P3).raw_read();
-
-    // We're already in a critical section, so this won't break anything.
-    let tbuff = BUFFER_SLOT.swap(TransferBuffer::placeholder());
-    let _res = tbuff.push(p0, p1, p2, p3, flags, cs);
-    //TODO: handle error
 }

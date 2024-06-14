@@ -171,7 +171,7 @@ impl GpioState {
             config: GpioConfig::from_rcnt(rcnt),
         }
     }
-    const fn into_rcnt(&self) -> u16 {
+    const fn into_rcnt(self) -> u16 {
         self.pins.into_rcnt() | self.config.into_rcnt()
     }
 }

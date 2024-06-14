@@ -19,6 +19,8 @@ pub mod serial;
 pub mod logs;
 pub mod utils;
 
+extern crate alloc; 
+
 #[cfg(test)]
 #[agb::entry]
 fn main(mut gba : agb::Gba) -> ! { loop {}}

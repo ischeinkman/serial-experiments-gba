@@ -26,7 +26,7 @@ use agb::{
 
 use alloc::format;
 use core::fmt::Write;
-use logs::{println, warning, Logger};
+use logs::{println, Logger};
 use serial_experiments_gba::*;
 pub use utils::*;
 
@@ -39,8 +39,8 @@ fn main(mut gba: agb::Gba) -> ! {
 }
 
 use serial::{
-    multiplayer::{MultiplayerSerial, PlayerId, TransferError},
-    BaudRate, Serial,
+    multiplayer::{BaudRate, MultiplayerSerial, PlayerId},
+    Serial,
 };
 
 fn multiplayer_test_main(mut _gba: Gba) -> ! {
@@ -65,43 +65,29 @@ fn multiplayer_test_main(mut _gba: Gba) -> ! {
     }
     Logger::get().id_from_framecount().unwrap();
     let mut serial = Serial::new();
-    let mut multiplayer_handle = MultiplayerSerial::new(&mut serial, BaudRate::B9600).unwrap();
 
-    unsafe {
-        static mut MULTIPLAYER_BUFFER: &mut [u16] = &mut [0xFFFF; 128];
-        multiplayer_handle
-            .enable_buffer_interrupt(&mut MULTIPLAYER_BUFFER)
-            .unwrap();
-    }
+    let mut multiplayer_handle = {
+        let multiplayer_handle = MultiplayerSerial::new(&mut serial, BaudRate::B9600).unwrap();
+        multiplayer_handle.enable_bulk_mode(128).unwrap()
+    };
+    multiplayer_handle.block_transfers_until_have_data(true);
     println!("Entered multiplayer mode");
-    multiplayer_handle.initialize_id().unwrap();
-    println!("We are {:?}", multiplayer_handle.id().unwrap());
+    println!("We are {:?}", multiplayer_handle.id());
 
     let _vblank_handle =
         unsafe { add_interrupt_handler(Interrupt::VBlank, |_cs| Logger::get().tick()) };
     let mut loopcnt = 0;
     loop {
-        multiplayer_handle.mark_unready();
         btns.update();
+        multiplayer_handle.tick().unwrap();
         let mut n = 0u16;
         for (idx, btn) in to_check.into_iter().enumerate() {
             let state = btns.is_pressed(btn);
             let edge = btns.is_just_pressed(btn);
             n |= ((state as u16) << idx) | ((edge as u16) << (idx + 8));
         }
-        multiplayer_handle.write_send_reg(n);
-        multiplayer_handle.mark_ready();
+        multiplayer_handle.queue_send(&[n]).unwrap();
 
-        while !multiplayer_handle.all_ready() {}
-        match multiplayer_handle.start_transfer() {
-            Ok(()) => {}
-            Err(TransferError::AlreadyInProgress) => {
-                warning!("Already in progress");
-            }
-            Err(e) => {
-                panic!("{:?}", e);
-            }
-        }
         let mut msg = format!("Current loop: {:03} \n", loopcnt,);
         let mut buffers = [
             &mut [0xFFFFu16; 128][..],
@@ -112,14 +98,12 @@ fn multiplayer_test_main(mut _gba: Gba) -> ! {
         let readcounts = multiplayer_handle.read_bulk(&mut buffers).unwrap();
         for pid in PlayerId::ALL {
             write!(&mut msg, "  -  Player {}", pid as u8).ok();
-            if Some(pid) == multiplayer_handle.id() {
+            if pid == multiplayer_handle.id() {
                 write!(&mut msg, "(Self)").ok();
             } else {
                 write!(&mut msg, "      ").ok();
             }
-            let raw_value = multiplayer_handle
-                .read_player_reg_raw(pid)
-                .unwrap_or(0xFFFF);
+            let raw_value = multiplayer_handle.read_player_reg_raw(pid);
             write!(&mut msg, ": {:0x} // ", raw_value).ok();
             let read = readcounts[pid as usize];
             writeln!(&mut msg, "{} - {:?}", read, &buffers[..read]).ok();

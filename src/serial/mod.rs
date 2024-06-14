@@ -200,15 +200,6 @@ impl RcntWrapper {
         }
     }
 }
-#[repr(u8)]
-#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy, Debug, Default)]
-pub enum BaudRate {
-    #[default]
-    B9600 = 0,
-    B38400 = 1,
-    B57600 = 2,
-    B115200 = 3,
-}
 
 #[derive(Clone, Copy, Eq, PartialEq, Hash, Debug)]
 pub enum SerialMode {
