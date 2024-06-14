@@ -18,19 +18,13 @@
 extern crate alloc;
 
 use agb::{
-    display::{
-        object::OamManaged,
-        tiled::{MapLoan, RegularBackgroundSize, RegularMap, TiledMap, VRamManager},
-        Priority,
-    },
-    external::portable_atomic::Ordering,
     input::{Button, ButtonController},
     interrupt::{add_interrupt_handler, Interrupt},
     mgba::DebugLevel,
     Gba,
 };
 
-use alloc::{format, vec::Vec};
+use alloc::format;
 use core::fmt::Write;
 use logs::{println, warning, Logger};
 use serial_experiments_gba::*;

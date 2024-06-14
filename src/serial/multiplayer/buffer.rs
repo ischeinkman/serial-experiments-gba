@@ -1,10 +1,8 @@
-use core::borrow::BorrowMut;
 use core::cell::Cell;
 use core::marker::PhantomData;
 use core::{ptr, slice};
 
 use agb::external::critical_section::{self, CriticalSection, Mutex};
-use agb::external::portable_atomic::{AtomicUsize, Ordering};
 
 use super::PlayerId;
 
@@ -117,11 +115,7 @@ impl<'a> TransferBuffer<'a> {
     pub fn read_bulk_for_player(&self, player: PlayerId, buffer: &mut [u16]) -> usize {
         critical_section::with(|cs| self.read_bulk_for_inner(cs, player, buffer))
     }
-    pub fn read_bulk(
-        &self,
-        mut buffers: &mut [&mut [u16]; 4],
-        cs: CriticalSection<'_>,
-    ) -> [usize; 4] {
+    pub fn read_bulk(&self, buffers: &mut [&mut [u16]; 4], cs: CriticalSection<'_>) -> [usize; 4] {
         PlayerId::ALL.map(move |pid| {
             let buffer = &mut buffers.as_mut()[pid as usize];
             self.read_bulk_for_inner(cs, pid, buffer.as_mut())

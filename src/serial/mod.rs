@@ -7,6 +7,7 @@ use voladdress::{Safe, VolAddress};
 
 use crate::utils::{read_bit, write_bit};
 
+#[derive(Default)]
 pub struct Serial {
     _phanton: PhantomData<()>,
 }
@@ -21,10 +22,6 @@ impl Serial {
 const RCNT: VolAddress<u16, Safe, Safe> = unsafe { VolAddress::new(0x4000134) };
 const SIOCNT: VolAddress<u16, Safe, Safe> = unsafe { VolAddress::new(0x4000128) };
 const SIOMLT_SEND: VolAddress<u16, Safe, Safe> = unsafe { VolAddress::new(0x400012A) };
-const SIOMULTI0: VolAddress<u16, Safe, Safe> = unsafe { VolAddress::new(0x4000120) };
-const SIOMULTI1: VolAddress<u16, Safe, Safe> = unsafe { VolAddress::new(0x4000122) };
-const SIOMULTI2: VolAddress<u16, Safe, Safe> = unsafe { VolAddress::new(0x4000124) };
-const SIOMULTI3: VolAddress<u16, Safe, Safe> = unsafe { VolAddress::new(0x4000126) };
 
 #[derive(PartialEq, Eq, Hash, Debug, PartialOrd, Ord, Clone, Copy)]
 pub enum Pin {
@@ -86,6 +83,11 @@ pub struct RcntWrapper {
 }
 method_wraps!(RcntWrapper, reg, RegisterWrapper);
 
+impl Default for RcntWrapper {
+    fn default() -> Self {
+        RcntWrapper::new()
+    }
+}
 impl RcntWrapper {
     pub const fn new() -> Self {
         Self {

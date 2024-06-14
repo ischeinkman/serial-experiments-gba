@@ -93,8 +93,10 @@ impl<'a> MultiplayerSerial<'a> {
         self.buffer_interrupt.is_some()
     }
 
-    pub fn read_bulk(&mut self, buffers: &mut [&mut [u16] ; 4]) -> Result<[usize; 4], InitializationError>
-    {
+    pub fn read_bulk(
+        &mut self,
+        buffers: &mut [&mut [u16]; 4],
+    ) -> Result<[usize; 4], InitializationError> {
         if !self.is_in_bulk_mode() {
             return Err(InitializationError::NotInBulkMode);
         }
@@ -281,9 +283,12 @@ impl MultiplayerSiocnt {
         self.read_bit(7)
     }
 }
+const SIOMULTI0: VolAddress<u16, Safe, Safe> = unsafe { VolAddress::new(0x4000120) };
+const SIOMULTI1: VolAddress<u16, Safe, Safe> = unsafe { VolAddress::new(0x4000122) };
+const SIOMULTI2: VolAddress<u16, Safe, Safe> = unsafe { VolAddress::new(0x4000124) };
+const SIOMULTI3: VolAddress<u16, Safe, Safe> = unsafe { VolAddress::new(0x4000126) };
 
 pub struct MultiplayerCommReg {
-    player_id: PlayerId,
     reg: VolAddress<u16, Safe, Safe>,
 }
 
@@ -294,14 +299,13 @@ impl MultiplayerCommReg {
     pub const P3: Self = MultiplayerCommReg::new(PlayerId::P3);
     pub const ALL: [Self; 4] = [Self::PARENT, Self::P1, Self::P2, Self::P3];
     const fn new(player_id: PlayerId) -> Self {
-        let addr = match player_id {
-            PlayerId::Parent => 0x4000120,
-            PlayerId::P1 => 0x4000122,
-            PlayerId::P2 => 0x4000124,
-            PlayerId::P3 => 0x4000126,
+        let reg = match player_id {
+            PlayerId::Parent => SIOMULTI0,
+            PlayerId::P1 => SIOMULTI1,
+            PlayerId::P2 => SIOMULTI2,
+            PlayerId::P3 => SIOMULTI3,
         };
-        let reg = unsafe { VolAddress::new(addr) };
-        Self { player_id, reg }
+        Self { reg }
     }
     pub const fn get(player_id: PlayerId) -> &'static Self {
         &Self::ALL[player_id as usize]
