@@ -1,9 +1,11 @@
 use core::{marker::PhantomData, mem};
 
 use crate::logs::println;
-use agb::external::portable_atomic::{AtomicU16, Ordering};
+use crate::utils::GbaCell;
+use agb::external::critical_section::{self, CriticalSection};
 use agb::interrupt::{add_interrupt_handler, Interrupt, InterruptHandler};
-
+use buffer::TransferBuffer;
+mod buffer;
 use super::*;
 
 #[repr(u8)]
@@ -19,6 +21,8 @@ pub enum PlayerId {
 impl PlayerId {
     pub const ALL: [PlayerId; 4] = [PlayerId::Parent, PlayerId::P1, PlayerId::P2, PlayerId::P3];
 }
+
+static BUFFER_SLOT: GbaCell<TransferBuffer<'static>> = GbaCell::new(TransferBuffer::PLACEHOLDER);
 
 pub struct MultiplayerSerial<'a> {
     _handle: PhantomData<&'a mut Serial>,
@@ -57,15 +61,47 @@ impl<'a> MultiplayerSerial<'a> {
         self.is_parent = is_parent;
         Ok(())
     }
-    pub fn enable_buffer_interrupt(&mut self) {
+    pub fn enable_buffer_interrupt(
+        &mut self,
+        buffer: &'static mut [u16],
+    ) -> Result<(), InitializationError> {
+        let nbuff = TransferBuffer::new(buffer);
+        if BUFFER_SLOT
+            .swap_if(nbuff, |old| old.is_placeholder())
+            .is_err()
+        {
+            return Err(InitializationError::AlreadyInitialized);
+        }
+        self.buffer_interrupt =
+            unsafe { Some(add_interrupt_handler(Interrupt::Serial, on_interrupt)) };
         self.enable_interrupt(true);
-        self.buffer_interrupt = Some(unsafe { add_interrupt_handler(Interrupt::Serial, |_| {}) });
+        Ok(())
+    }
+    pub fn disable_buffer_interrupt(&mut self) {
+        self.enable_interrupt(false);
+        self.buffer_interrupt = None;
+        BUFFER_SLOT.swap(TransferBuffer::PLACEHOLDER);
     }
     pub fn write_send_reg(&mut self, data: u16) {
         SIOMLT_SEND.write(data)
     }
     pub fn read_player_reg_raw(&self, player: PlayerId) -> Option<u16> {
-        MultiplayerCommReg::new(player).read()
+        MultiplayerCommReg::get(player).read()
+    }
+
+    pub fn is_in_bulk_mode(&self) -> bool {
+        self.buffer_interrupt.is_some()
+    }
+
+    pub fn read_bulk(&mut self, buffers: &mut [&mut [u16] ; 4]) -> Result<[usize; 4], InitializationError>
+    {
+        if !self.is_in_bulk_mode() {
+            return Err(InitializationError::NotInBulkMode);
+        }
+        critical_section::with(|cs| {
+            let tbuf = BUFFER_SLOT.swap(TransferBuffer::PLACEHOLDER);
+            Ok(tbuf.read_bulk(buffers, cs))
+        })
     }
 
     pub fn initialize_id(&mut self) -> Result<(), TransferError> {
@@ -74,7 +110,6 @@ impl<'a> MultiplayerSerial<'a> {
         self.mark_unready();
         self.write_send_reg(SENTINEL);
         println!("Send register initialized");
-        self.enable_interrupt(true);
         self.mark_ready();
         loop {
             {
@@ -158,6 +193,13 @@ impl<'a> MultiplayerSerial<'a> {
 pub enum InitializationError {
     /// The "error" flag was tripped in the SIOCNT register.
     FailedOkayCheck,
+    /// The communication memory buffer had a length not divisible by 4
+    InvalidBufferLength,
+    /// The serial port has already been initialized in multiplayer mode
+    AlreadyInitialized,
+    /// The Multiplayer handle has not been configured for bulk interrupt-based
+    /// transfer
+    NotInBulkMode,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -251,7 +293,7 @@ impl MultiplayerCommReg {
     pub const P2: Self = MultiplayerCommReg::new(PlayerId::P2);
     pub const P3: Self = MultiplayerCommReg::new(PlayerId::P3);
     pub const ALL: [Self; 4] = [Self::PARENT, Self::P1, Self::P2, Self::P3];
-    pub const fn new(player_id: PlayerId) -> Self {
+    const fn new(player_id: PlayerId) -> Self {
         let addr = match player_id {
             PlayerId::Parent => 0x4000120,
             PlayerId::P1 => 0x4000122,
@@ -260,6 +302,9 @@ impl MultiplayerCommReg {
         };
         let reg = unsafe { VolAddress::new(addr) };
         Self { player_id, reg }
+    }
+    pub const fn get(player_id: PlayerId) -> &'static Self {
+        &Self::ALL[player_id as usize]
     }
 
     pub fn read(&self) -> Option<u16> {
@@ -276,4 +321,18 @@ impl MultiplayerCommReg {
     pub fn is_transfering(&self) -> bool {
         self.raw_read() == 0xFFFF
     }
+}
+
+fn on_interrupt(cs: CriticalSection<'_>) {
+    let siocnt = MultiplayerSiocnt::get();
+    let flags = (siocnt.read() & 0xFF) as u8;
+    let p0 = MultiplayerCommReg::get(PlayerId::Parent).raw_read();
+    let p1 = MultiplayerCommReg::get(PlayerId::P1).raw_read();
+    let p2 = MultiplayerCommReg::get(PlayerId::P2).raw_read();
+    let p3 = MultiplayerCommReg::get(PlayerId::P3).raw_read();
+
+    // We're already in a critical section, so this won't break anything.
+    let tbuff = BUFFER_SLOT.swap(TransferBuffer::PLACEHOLDER);
+    let _res = tbuff.push(p0, p1, p2, p3, flags, cs);
+    //TODO: handle error
 }

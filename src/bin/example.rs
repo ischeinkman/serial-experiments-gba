@@ -49,7 +49,6 @@ use serial::{
     BaudRate, Serial,
 };
 
-#[allow(dead_code)]
 fn multiplayer_test_main(mut _gba: Gba) -> ! {
     agb::mgba::Mgba::new().expect("Should be in mgba");
     Logger::get().set_level(DebugLevel::Debug);
@@ -73,7 +72,13 @@ fn multiplayer_test_main(mut _gba: Gba) -> ! {
     Logger::get().id_from_framecount().unwrap();
     let mut serial = Serial::new();
     let mut multiplayer_handle = MultiplayerSerial::new(&mut serial, BaudRate::B9600).unwrap();
-    multiplayer_handle.enable_buffer_interrupt();
+
+    unsafe {
+        static mut MULTIPLAYER_BUFFER: &mut [u16] = &mut [0xFFFF; 128];
+        multiplayer_handle
+            .enable_buffer_interrupt(&mut MULTIPLAYER_BUFFER)
+            .unwrap();
+    }
     println!("Entered multiplayer mode");
     multiplayer_handle.initialize_id().unwrap();
     println!("We are {:?}", multiplayer_handle.id().unwrap());
@@ -104,6 +109,13 @@ fn multiplayer_test_main(mut _gba: Gba) -> ! {
             }
         }
         let mut msg = format!("Current loop: {:03} \n", loopcnt,);
+        let mut buffers = [
+            &mut [0xFFFFu16; 128][..],
+            &mut [0xFFFFu16; 128][..],
+            &mut [0xFFFFu16; 128][..],
+            &mut [0xFFFFu16; 128][..],
+        ];
+        let readcounts = multiplayer_handle.read_bulk(&mut buffers).unwrap();
         for pid in PlayerId::ALL {
             write!(&mut msg, "  -  Player {}", pid as u8).ok();
             if Some(pid) == multiplayer_handle.id() {
@@ -111,14 +123,12 @@ fn multiplayer_test_main(mut _gba: Gba) -> ! {
             } else {
                 write!(&mut msg, "      ").ok();
             }
-            writeln!(
-                &mut msg,
-                ": {:0x}",
-                multiplayer_handle
-                    .read_player_reg_raw(pid)
-                    .unwrap_or(0xFFFF)
-            )
-            .ok();
+            let raw_value = multiplayer_handle
+                .read_player_reg_raw(pid)
+                .unwrap_or(0xFFFF);
+            write!(&mut msg, ": {:0x} // ", raw_value).ok();
+            let read = readcounts[pid as usize];
+            writeln!(&mut msg, "{} - {:?}", read, &buffers[..read]).ok();
         }
         println!("{}", msg);
         loopcnt += 1;
