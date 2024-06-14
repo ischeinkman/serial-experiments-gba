@@ -22,7 +22,7 @@ impl PlayerId {
     pub const ALL: [PlayerId; 4] = [PlayerId::Parent, PlayerId::P1, PlayerId::P2, PlayerId::P3];
 }
 
-static BUFFER_SLOT: GbaCell<TransferBuffer<'static>> = GbaCell::new(TransferBuffer::PLACEHOLDER);
+static BUFFER_SLOT: GbaCell<TransferBuffer<'static>> = GbaCell::new(TransferBuffer::placeholder());
 
 pub struct MultiplayerSerial<'a> {
     _handle: PhantomData<&'a mut Serial>,
@@ -80,7 +80,7 @@ impl<'a> MultiplayerSerial<'a> {
     pub fn disable_buffer_interrupt(&mut self) {
         self.enable_interrupt(false);
         self.buffer_interrupt = None;
-        BUFFER_SLOT.swap(TransferBuffer::PLACEHOLDER);
+        BUFFER_SLOT.swap(TransferBuffer::placeholder());
     }
     pub fn write_send_reg(&mut self, data: u16) {
         SIOMLT_SEND.write(data)
@@ -101,7 +101,7 @@ impl<'a> MultiplayerSerial<'a> {
             return Err(InitializationError::NotInBulkMode);
         }
         critical_section::with(|cs| {
-            let tbuf = BUFFER_SLOT.swap(TransferBuffer::PLACEHOLDER);
+            let tbuf = BUFFER_SLOT.swap(TransferBuffer::placeholder());
             Ok(tbuf.read_bulk(buffers, cs))
         })
     }
@@ -336,7 +336,7 @@ fn on_interrupt(cs: CriticalSection<'_>) {
     let p3 = MultiplayerCommReg::get(PlayerId::P3).raw_read();
 
     // We're already in a critical section, so this won't break anything.
-    let tbuff = BUFFER_SLOT.swap(TransferBuffer::PLACEHOLDER);
+    let tbuff = BUFFER_SLOT.swap(TransferBuffer::placeholder());
     let _res = tbuff.push(p0, p1, p2, p3, flags, cs);
     //TODO: handle error
 }

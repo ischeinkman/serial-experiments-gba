@@ -7,14 +7,11 @@ use agb::external::critical_section::{self, CriticalSection, Mutex};
 use super::PlayerId;
 
 pub struct TransferBuffer<'a> {
-    p0_buffer: *mut u16,
-    p1_buffer: *mut u16,
-    p2_buffer: *mut u16,
-    p3_buffer: *mut u16,
+    buffer: *mut u16,
     bufflen: usize,
     read_idx: Mutex<Cell<usize>>,
     write_idx: Mutex<Cell<usize>>,
-    _phantom: PhantomData<&'a mut [u16]>,
+    _phantom: PhantomData<&'a [u16]>,
 }
 
 /// #SAFETY
@@ -29,39 +26,38 @@ unsafe impl<'a> Sync for TransferBuffer<'a> {}
 unsafe impl<'a> Send for TransferBuffer<'a> {}
 
 impl<'a> TransferBuffer<'a> {
-    pub const PLACEHOLDER: Self = Self {
-        p0_buffer: ptr::null_mut(),
-        p1_buffer: ptr::null_mut(),
-        p2_buffer: ptr::null_mut(),
-        p3_buffer: ptr::null_mut(),
-        bufflen: 0,
-        read_idx: Mutex::new(Cell::new(0)),
-        write_idx: Mutex::new(Cell::new(0)),
-        _phantom: PhantomData,
-    };
+    pub const fn placeholder() -> Self {
+        Self {
+            buffer: ptr::null_mut(),
+            bufflen: 0,
+            read_idx: Mutex::new(Cell::new(0)),
+            write_idx: Mutex::new(Cell::new(0)),
+            _phantom: PhantomData,
+        }
+    }
     pub const fn is_placeholder(&self) -> bool {
         self.bufflen == 0
     }
     pub fn new(memory: &'a mut [u16]) -> Self {
         debug_assert!(memory.len() % 4 == 0);
         let bufflen = memory.len() / 4;
-        let (left, right) = memory.split_at_mut(memory.len() / 2);
-        let (p0_buffer, p1_buffer) = left.split_at_mut(bufflen);
-        let (p2_buffer, p3_buffer) = right.split_at_mut(bufflen);
-        p0_buffer.fill(0xFFFF);
-        p1_buffer.fill(0xFFFF);
-        p2_buffer.fill(0xFFFF);
-        p3_buffer.fill(0xFFFF);
+        memory.fill(0xFFFF);
         Self {
-            p0_buffer: p0_buffer.as_mut_ptr(),
-            p1_buffer: p1_buffer.as_mut_ptr(),
-            p2_buffer: p2_buffer.as_mut_ptr(),
-            p3_buffer: p3_buffer.as_mut_ptr(),
+            buffer: memory.as_mut_ptr(),
             bufflen,
             read_idx: Mutex::new(Cell::new(0)),
             write_idx: Mutex::new(Cell::new(0)),
             _phantom: PhantomData,
         }
+    }
+    fn player_buffer_start(&self, player: PlayerId) -> *mut u16 {
+        // #SAFETY
+        //
+        // We guarantee at creation time that `self.buffer` points to an
+        // allocation that is exactly `4 * self.bufflen` long, so the resulting
+        // pointer is always in bounds.
+
+        unsafe { self.buffer.add(self.bufflen * player as usize) }
     }
     pub fn push(
         &self,
@@ -79,10 +75,12 @@ impl<'a> TransferBuffer<'a> {
         }
         let widx = raw_widx % self.bufflen;
         unsafe {
-            self.p0_buffer.add(widx).write(p0);
-            self.p1_buffer.add(widx).write(p1);
-            self.p2_buffer.add(widx).write(p2);
-            self.p3_buffer.add(widx).write(p3);
+            self.player_buffer_start(PlayerId::Parent)
+                .add(widx)
+                .write(p0);
+            self.player_buffer_start(PlayerId::P1).add(widx).write(p1);
+            self.player_buffer_start(PlayerId::P2).add(widx).write(p2);
+            self.player_buffer_start(PlayerId::P3).add(widx).write(p3);
         }
         self.write_idx
             .borrow(cs)
@@ -100,10 +98,10 @@ impl<'a> TransferBuffer<'a> {
             let ridx = raw_ridx % self.bufflen;
             let retvl = unsafe {
                 [
-                    self.p0_buffer.add(ridx).read(),
-                    self.p1_buffer.add(ridx).read(),
-                    self.p2_buffer.add(ridx).read(),
-                    self.p3_buffer.add(ridx).read(),
+                    self.player_buffer_start(PlayerId::Parent).add(ridx).read(),
+                    self.player_buffer_start(PlayerId::P1).add(ridx).read(),
+                    self.player_buffer_start(PlayerId::P2).add(ridx).read(),
+                    self.player_buffer_start(PlayerId::P3).add(ridx).read(),
                 ]
             };
             self.read_idx
@@ -134,12 +132,7 @@ impl<'a> TransferBuffer<'a> {
         }
         let mapped_ridx = raw_ridx % self.bufflen;
         let mapped_widx = raw_widx % self.bufflen;
-        let buffer = match player {
-            PlayerId::Parent => self.p0_buffer,
-            PlayerId::P1 => self.p1_buffer,
-            PlayerId::P2 => self.p2_buffer,
-            PlayerId::P3 => self.p3_buffer,
-        };
+        let buffer = self.player_buffer_start(player);
         let buffer = unsafe { slice::from_raw_parts(buffer as *const _, self.bufflen) };
         if mapped_ridx < mapped_widx {
             let to_read = (mapped_widx - mapped_ridx).min(outbuff.len());
@@ -176,8 +169,15 @@ const fn is_empty(ridx: usize, widx: usize, _bufflen: usize) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use core::mem;
+
     use super::*;
     use agb::Gba;
+
+    #[test_case]
+    fn verify_size(_gba : &mut Gba) {
+        assert_eq!(mem::size_of::<TransferBuffer>(), 4 * mem::size_of::<usize>())
+    }
 
     #[test_case]
     fn test_buffer(_gba: &mut Gba) {
