@@ -1,5 +1,4 @@
 use super::*;
-use crate::logs::println;
 
 use agb::interrupt::InterruptHandler;
 use bulk::{BulkInitError, BulkMultiplayer};
@@ -7,9 +6,9 @@ use bulk::{BulkInitError, BulkMultiplayer};
 use core::{marker::PhantomData, mem};
 
 mod buffer;
-mod ringbuf;
 mod bulk;
 mod registers;
+mod ringbuf;
 use registers::MultiplayerCommReg;
 
 const SENTINEL: u16 = u16::MAX;
@@ -90,25 +89,18 @@ impl<'a> MultiplayerSerial<'a> {
 
     pub fn initialize_id(&mut self) -> Result<(), TransferError> {
         const SENTINEL: u16 = 0xFEAD;
-        println!("Initializing ID");
         self.mark_unready();
         self.write_send_reg(SENTINEL);
-        println!("Send register initialized");
         self.mark_ready();
         loop {
             {
-                println!("Performing transfer start");
                 match self.start_transfer() {
-                    Ok(()) => {
-                        println!("Started transfer.");
-                    }
+                    Ok(()) => {}
                     Err(TransferError::AlreadyInProgress) => {
                         // Parent beat us to it; let it keep going
-                        println!("Transfer in progress.");
                     }
                     Err(TransferError::FailedReadyCheck) => {
                         // Others are lagging; wait for them
-                        println!("Failed ready check.");
                     }
                     Err(other) => {
                         return Err(other);
@@ -132,7 +124,6 @@ impl<'a> MultiplayerSerial<'a> {
         }
         let all_ready = self.all_ready();
         if self.is_parent {
-            println!("Doing transfer.");
             MultiplayerSiocnt::get().start_transfer();
         }
         if !all_ready {

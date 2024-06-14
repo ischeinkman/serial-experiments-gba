@@ -219,6 +219,7 @@ mod tests {
 
     use super::*;
     use agb::Gba;
+    use agb::external::critical_section;
 
     #[test_case]
     fn verify_size(_gba: &mut Gba) {

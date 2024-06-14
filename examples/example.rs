@@ -26,9 +26,10 @@ use agb::{
 
 use alloc::format;
 use core::fmt::Write;
-use logs::{println, Logger};
+use logs::Logger;
 use serial_experiments_gba::*;
 pub use utils::*;
+mod logs;
 
 // The main function must take 1 arguments and never return. The agb::entry decorator
 // ensures that everything is in order. `agb` will call this after setting up the stack
@@ -103,8 +104,7 @@ fn multiplayer_test_main(mut _gba: Gba) -> ! {
             } else {
                 write!(&mut msg, "      ").ok();
             }
-            let raw_value = multiplayer_handle.read_player_reg_raw(pid);
-            write!(&mut msg, ": {:0x} // ", raw_value).ok();
+            write!(&mut msg, ": ?? // ").ok();
             let read = readcounts[pid as usize];
             writeln!(&mut msg, "{} - {:?}", read, &buffers[..read]).ok();
         }

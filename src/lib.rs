@@ -16,7 +16,6 @@
 #![allow(clippy::assertions_on_constants)]
 
 pub mod serial;
-pub mod logs;
 pub mod utils;
 
 extern crate alloc; 

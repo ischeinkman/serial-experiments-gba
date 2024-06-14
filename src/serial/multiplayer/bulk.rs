@@ -1,3 +1,32 @@
+//! Provides a higher-level easy-to-use interface for dealing with multiplayer
+//! communication on the GBA.
+//! 
+//! # Basic Usage
+//! 
+//! 1. Start "bulk multiplayer" mode by calling [BulkMultiplayer::new]. This
+//!    will initialize the player IDs, allocated the read & write buffers, and
+//!    configure the necessary interrupts.
+//! 2. Set the value of [BulkMultiplayer::block_transfers_until_have_data]
+//!    depending on your usecase. If `true` (default) then transfers will only
+//!    happen when EVERY SINGLE unit in the session has data available to send;
+//!    otherwise transfers will happen when ANY unit is sending data. Note that
+//!    any individual unit setting this to `true` will block the transfer for
+//!    all other units as well!
+//! 3. Load data to be sent to other units with [BulkMultiplayer::queue_send]
+//!    and/or read data other players have sent with
+//!    [BulkMultiplayer::read_bulk].
+//! 4. Make sure [BulkMultiplayer::tick] is called during your main game loop. 
+//! 
+//! # Notes
+//! * Due to GBA hardware quirks it is impossible to distinguish between a unit
+//!   not being connected and a unit sending a `0xFFFF`. As such be sure to not
+//!   send that value as part of your transfer if you don't want to lose
+//!   information. 
+//! * This mode currently assumes that all units will attempt to call
+//!   [BulkMultiplayer::new] at around the same time due to some initialization
+//!   quirks. While we don't expect things to break if this is not true, we
+//!   cannot guarantee no data will be lost.
+
 use agb::external::critical_section::{self, CriticalSection};
 use agb::interrupt::{add_interrupt_handler, Interrupt};
 
@@ -33,8 +62,10 @@ impl From<TransferError> for BulkInitError {
     }
 }
 
+/// An error that can happen during per-frame processing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BulkTickError {
+    /// The serial I/O error bit was flagged during per-frame processing. 
     FailedOkayCheck,
 }
 
@@ -54,12 +85,9 @@ impl<'a> BulkMultiplayer<'a> {
     pub fn new(mut inner: MultiplayerSerial<'a>, cap: usize) -> Result<Self, BulkInitError> {
         inner.initialize_id()?;
         let nbuff = TransferBuffer::new(cap);
-        if BUFFER_SLOT
+        BUFFER_SLOT
             .swap_if(nbuff, |old| old.is_placeholder())
-            .is_err()
-        {
-            return Err(BulkInitError::AlreadyInitialized);
-        }
+            .map_err(|_| BulkInitError::AlreadyInitialized)?;
         let nout = Ringbuffer::new(cap);
         OUTBUFFER
             .swap_if(nout, |old| old.is_placeholder())
@@ -89,10 +117,7 @@ impl<'a> BulkMultiplayer<'a> {
         &mut self,
         buffers: &mut [&mut [u16]; 4],
     ) -> Result<[usize; 4], MultiplayerError> {
-        critical_section::with(|cs| {
-            let tbuf = BUFFER_SLOT.swap(TransferBuffer::empty());
-            Ok(tbuf.read_bulk(buffers, cs))
-        })
+        critical_section::with(|cs| BUFFER_SLOT.lock_in(cs, |tbuf| Ok(tbuf.read_bulk(buffers, cs))))
     }
     pub fn leave(mut self) -> MultiplayerSerial<'a> {
         self.inner.enable_interrupt(false);
@@ -123,9 +148,6 @@ impl<'a> BulkMultiplayer<'a> {
             | Err(TransferError::FailedReadyCheck) => Ok(()),
         }
     }
-    pub fn read_player_reg_raw(&self, pid: PlayerId) -> u16 {
-        MultiplayerCommReg::get(pid).raw_read()
-    }
 }
 
 fn bulk_mode_interrupt_callback(cs: CriticalSection<'_>) {
@@ -137,7 +159,6 @@ fn bulk_mode_interrupt_callback(cs: CriticalSection<'_>) {
     let p3 = MultiplayerCommReg::get(PlayerId::P3).raw_read();
 
     if !(p0 == SENTINEL && p1 == SENTINEL && p2 == SENTINEL && p3 == SENTINEL) {
-        // We're already in a critical section, so this won't break anything.
         BUFFER_SLOT.lock_in(cs, |tbuff| {
             debug_assert!(!tbuff.is_placeholder());
             //TODO: handle error
@@ -151,7 +172,7 @@ fn bulk_mode_interrupt_callback(cs: CriticalSection<'_>) {
             SIOMLT_SEND.write(nxt);
         } else {
             SIOMLT_SEND.write(SENTINEL);
-            if BLOCK_TRANSFER_UNTIL_SEND.get_copy() {
+            if BLOCK_TRANSFER_UNTIL_SEND.get_copy_in(cs) {
                 mark_unready()
             }
         }

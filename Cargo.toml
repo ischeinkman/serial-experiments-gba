@@ -7,10 +7,6 @@ edition = "2021"
 agb = "0.20.3"
 voladdress = "1.4.0"
 
-[[bin]]
-name = "example"
-path = "src/bin/example.rs"
-
 [profile.dev]
 opt-level = 3
 debug = true

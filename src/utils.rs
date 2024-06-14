@@ -18,6 +18,13 @@ pub const fn write_bit_u8(v: u8, n: u8, bit: bool) -> u8 {
     (v & !(1 << n)) | ((bit as u8) << n)
 }
 
+/// An atomic [Cell] like value designed for static mutables that need to
+/// communicate between interrupts and non-interrupt code.
+///
+/// Note that nearly all methods on this struct come in pairs: one for use
+/// during interrupts which will lock a mutex and one for use during interrupts
+/// which can re-use the interrupt's [CriticalSection] token. The latter are
+/// marked with an `_in` at the end of their function names.
 pub struct GbaCell<T> {
     inner: Mutex<Cell<T>>,
 }
@@ -28,65 +35,69 @@ impl<T> GbaCell<T> {
             inner: Mutex::new(Cell::new(value)),
         }
     }
+    /// Atomically swaps the value in this cell while already in a [CriticalSection].
     pub fn swap(&self, value: T) -> T {
-        critical_section::with(|cs| self.inner.borrow(cs).replace(value))
+        critical_section::with(|cs| self.swap_in(cs, value))
+    }
+    /// Swaps the value in this cell while already in a [CriticalSection].
+    /// Returns the value previously in this [GbaCell].
+    pub fn swap_in(&self, cs: CriticalSection, value: T) -> T {
+        self.inner.borrow(cs).replace(value)
     }
     pub fn get_mut(&mut self) -> &mut T {
         self.inner.get_mut().get_mut()
     }
+    /// Swaps the current value with `value` only if the current value meets a
+    /// condition; otherwise returns `Err(value).`
     pub fn swap_if<F>(&self, value: T, condition: F) -> Result<T, T>
     where
         F: FnOnce(&T) -> bool,
     {
-        critical_section::with(|cs| {
-            let old = self.inner.borrow(cs).replace(value);
-            if condition(&old) {
-                Ok(old)
-            } else {
-                let value = self.inner.borrow(cs).replace(old);
-                Err(value)
-            }
-        })
+        critical_section::with(|cs| self.swap_in_if(cs, value, condition))
+    }
+    /// Swaps the current value with `value` only if the current value meets a
+    /// condition; otherwise returns `Err(value).`
+    ///
+    /// For use where we are already in a [CriticalSection], such as during
+    /// interrupts.
+    pub fn swap_in_if<F>(&self, cs: CriticalSection, value: T, condition: F) -> Result<T, T>
+    where
+        F: FnOnce(&T) -> bool,
+    {
+        let old = self.inner.borrow(cs).replace(value);
+        if condition(&old) {
+            Ok(old)
+        } else {
+            let value = self.inner.borrow(cs).replace(old);
+            Err(value)
+        }
     }
 }
 
 impl<T: Copy> GbaCell<T> {
     pub fn get_copy(&self) -> T {
-        critical_section::with(|cs| self.inner.borrow(cs).get())
+        critical_section::with(|cs| self.get_copy_in(cs))
+    }
+    pub fn get_copy_in(&self, cs: CriticalSection) -> T {
+        self.inner.borrow(cs).get()
     }
 }
 
 impl<T: Default> GbaCell<T> {
-    pub fn lock<F, R>(&self, cb: F) -> R
-    where
-        F: FnOnce(&T) -> R,
-    {
+    pub fn lock<R>(&self, cb: impl FnOnce(&T) -> R) -> R {
         critical_section::with(|cs| self.lock_in(cs, cb))
     }
-    pub fn lock_in<F, R>(&self, cs: CriticalSection, cb: F) -> R
-    where
-        F: FnOnce(&T) -> R,
-    {
-        let sentinel = T::default();
-        let val = self.inner.borrow(cs).replace(sentinel);
-        let ret = cb(&val);
-        self.inner.borrow(cs).set(val);
-        ret
+    pub fn lock_in<R>(&self, cs: CriticalSection, cb: impl FnOnce(&T) -> R) -> R {
+        self.lock_mut_in(cs, |item| cb(item))
     }
-    pub fn lock_mut_in<F, R>(&self, cs: CriticalSection, cb: F) -> R
-    where
-        F: FnOnce(&mut T) -> R,
-    {
+    pub fn lock_mut_in<R>(&self, cs: CriticalSection, cb: impl FnOnce(&mut T) -> R) -> R {
         let sentinel = T::default();
         let mut val = self.inner.borrow(cs).replace(sentinel);
         let ret = cb(&mut val);
         self.inner.borrow(cs).set(val);
         ret
     }
-    pub fn lock_mut<F, R>(&self, cb: F) -> R
-    where
-        F: FnOnce(&mut T) -> R,
-    {
+    pub fn lock_mut<R>(&self, cb: impl FnOnce(&mut T) -> R) -> R {
         critical_section::with(|cs| self.lock_mut_in(cs, cb))
     }
 }
