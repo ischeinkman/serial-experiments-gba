@@ -43,7 +43,7 @@ use serial::{
     multiplayer::{BaudRate, MultiplayerSerial, PlayerId},
     Serial,
 };
-const to_check: &[Button] = &[
+const TO_CHECK: &[Button] = &[
     Button::UP,
     Button::DOWN,
     Button::LEFT,
@@ -56,10 +56,10 @@ const to_check: &[Button] = &[
 
 fn parse_buttons(n: u16) -> Vec<Button> {
     let mut retvl = Vec::new();
-    for idx in 0..to_check.len() {
+    for idx in 0..TO_CHECK.len() {
         let mask = 1 << idx;
         if read_bit(n, idx as u8) {
-            retvl.push(to_check[idx]);
+            retvl.push(TO_CHECK[idx]);
         }
     }
     retvl
@@ -67,7 +67,7 @@ fn parse_buttons(n: u16) -> Vec<Button> {
 
 fn write_buttons(btns: &ButtonController) -> u16 {
     let mut n = 0u16;
-    for (idx, btn) in to_check.into_iter().enumerate() {
+    for (idx, btn) in TO_CHECK.into_iter().enumerate() {
         let idx = idx as u8;
         let state = btns.is_pressed(*btn);
         let edge = btns.is_just_pressed(*btn);
