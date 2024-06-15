@@ -58,35 +58,6 @@ impl Logger {
     }
 }
 
-#[macro_export]
-macro_rules! debug {
-    ( $( $x:expr ),*) => {{
-        let _ = $crate::logs::Logger::get().log(
-            agb::mgba::DebugLevel::Debug,
-            format_args!($($x,)*)
-        );
-    }};
-}
-
-#[macro_export]
-macro_rules! info {
-    ( $( $x:expr ),*) => {{
-        let _ = $crate::logs::Logger::get().log(
-            agb::mgba::DebugLevel::Info,
-            format_args!($($x,)*)
-        );
-    }};
-}
-
-#[macro_export]
-macro_rules! warning {
-    ( $( $x:expr ),*) => {{
-        let _ = $crate::logs::Logger::get().log(
-            agb::mgba::DebugLevel::Warning,
-            format_args!($($x,)*)
-        );
-    }};
-}
 
 #[macro_export]
 macro_rules! println {
@@ -98,7 +69,4 @@ macro_rules! println {
     }};
 }
 
-pub use debug;
-pub use info;
 pub use println;
-pub use warning;

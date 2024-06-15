@@ -24,7 +24,7 @@ use agb::{
     Gba,
 };
 
-use alloc::format;
+use alloc::{format, vec::Vec};
 use core::fmt::Write;
 use logs::Logger;
 use serial_experiments_gba::*;
@@ -43,21 +43,44 @@ use serial::{
     multiplayer::{BaudRate, MultiplayerSerial, PlayerId},
     Serial,
 };
+const to_check: &[Button] = &[
+    Button::UP,
+    Button::DOWN,
+    Button::LEFT,
+    Button::RIGHT,
+    Button::A,
+    Button::B,
+    Button::L,
+    Button::R,
+];
+
+fn parse_buttons(n: u16) -> Vec<Button> {
+    let mut retvl = Vec::new();
+    for idx in 0..to_check.len() {
+        let mask = 1 << idx;
+        if read_bit(n, idx as u8) {
+            retvl.push(to_check[idx]);
+        }
+    }
+    retvl
+}
+
+fn write_buttons(btns: &ButtonController) -> u16 {
+    let mut n = 0u16;
+    for (idx, btn) in to_check.into_iter().enumerate() {
+        let idx = idx as u8;
+        let state = btns.is_pressed(*btn);
+        let edge = btns.is_just_pressed(*btn);
+        n = write_bit(n, idx, state);
+        n = write_bit(n, idx + 8, edge);
+    }
+    n
+}
 
 fn multiplayer_test_main(mut _gba: Gba) -> ! {
     agb::mgba::Mgba::new().expect("Should be in mgba");
     Logger::get().set_level(DebugLevel::Debug);
     let mut btns = ButtonController::new();
-    let to_check = [
-        Button::UP,
-        Button::DOWN,
-        Button::LEFT,
-        Button::RIGHT,
-        Button::A,
-        Button::B,
-        Button::L,
-        Button::R,
-    ];
 
     println!("Now waiting for press.");
     while !btns.is_pressed(Button::A) {
@@ -81,13 +104,9 @@ fn multiplayer_test_main(mut _gba: Gba) -> ! {
     loop {
         btns.update();
         multiplayer_handle.tick().unwrap();
-        let mut n = 0u16;
-        for (idx, btn) in to_check.into_iter().enumerate() {
-            let state = btns.is_pressed(btn);
-            let edge = btns.is_just_pressed(btn);
-            n |= ((state as u16) << idx) | ((edge as u16) << (idx + 8));
-        }
-        multiplayer_handle.queue_send(&[n]).unwrap();
+        multiplayer_handle
+            .queue_send(&[write_buttons(&btns)])
+            .unwrap();
 
         let mut msg = format!("Current loop: {:03} \n", loopcnt,);
         let mut buffers = [
@@ -106,9 +125,15 @@ fn multiplayer_test_main(mut _gba: Gba) -> ! {
             }
             write!(&mut msg, ": ?? // ").ok();
             let read = readcounts[pid as usize];
-            writeln!(&mut msg, "{} - {:?}", read, &buffers[pid as usize][..read]).ok();
+            let buf = &buffers[pid as usize][..read];
+            writeln!(&mut msg, "{} - {:?}", read, &buf).ok();
+            for (idx, n) in buf.iter().enumerate() {
+                writeln!(&mut msg, "        {:02}: {:?}", idx, parse_buttons(*n)).ok();
+            }
         }
-        println!("{}", msg);
+        if readcounts.iter().any(|n| *n > 0) {
+            println!("{}", msg);
+        }
         loopcnt += 1;
     }
     drop(_vblank_handle);
