@@ -131,7 +131,7 @@ impl Ringbuffer {
         let mapped_ridx = raw_ridx % self.bufflen;
         let mapped_widx = raw_widx % self.bufflen;
         let buffer = unsafe { slice::from_raw_parts(self.buffer as *const _, self.bufflen) };
-        if mapped_ridx < mapped_widx {
+        let retvl = if mapped_ridx < mapped_widx {
             let to_read = (mapped_widx - mapped_ridx).min(outbuff.len());
             outbuff[..to_read].copy_from_slice(&buffer[mapped_ridx..(mapped_ridx + to_read)]);
             to_read
@@ -139,14 +139,19 @@ impl Ringbuffer {
             let to_read_from_first = (self.bufflen - mapped_ridx).min(outbuff.len());
             outbuff[..to_read_from_first]
                 .copy_from_slice(&buffer[mapped_ridx..(mapped_ridx + to_read_from_first)]);
-            if to_read_from_first >= outbuff.len() {
-                return to_read_from_first;
+            if to_read_from_first < outbuff.len() {
+                let to_read_from_second = (outbuff.len() - to_read_from_first).min(mapped_widx);
+                outbuff[to_read_from_first..to_read_from_first + to_read_from_second]
+                    .copy_from_slice(&buffer[..to_read_from_second]);
+                to_read_from_first + to_read_from_second
+            } else {
+                to_read_from_first
             }
-            let to_read_from_second = (outbuff.len() - to_read_from_first).min(mapped_widx);
-            outbuff[to_read_from_first..to_read_from_first + to_read_from_second]
-                .copy_from_slice(&buffer[..to_read_from_second]);
-            to_read_from_first + to_read_from_second
-        }
+        };
+        self.read_idx
+            .borrow(cs)
+            .set((raw_ridx + retvl) % (2 * self.bufflen));
+        retvl
     }
     pub fn write_bulk(&self, buff: &[u16], cs: CriticalSection<'_>) -> usize {
         //TODO: Implement this
@@ -188,11 +193,37 @@ mod tests {
     use core::mem;
 
     use super::*;
+    use agb::external::critical_section;
     use agb::Gba;
 
     #[test_case]
     fn verify_size(_gba: &mut Gba) {
         assert_eq!(mem::size_of::<Ringbuffer>(), 4 * mem::size_of::<usize>())
+    }
+    #[test_case]
+    fn test_buffer_bulk(_gba: &mut Gba) {
+        const BUFFER_SIZE: usize = 10;
+        const OUTBUFF_SIZE: usize = 3;
+
+        let buffer = Ringbuffer::new(BUFFER_SIZE);
+        critical_section::with(|cs| {
+            assert_eq!(
+                buffer.write_bulk(&[30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41], cs),
+                BUFFER_SIZE
+            );
+            let mut outbuff = [0xFFFF; OUTBUFF_SIZE];
+            assert_eq!(buffer.read_bulk(&mut outbuff, cs), OUTBUFF_SIZE);
+            assert_eq!(outbuff, [30, 31, 32]);
+            assert_eq!(buffer.read_bulk(&mut outbuff, cs), OUTBUFF_SIZE);
+            assert_eq!(outbuff, [33, 34, 35]);
+            assert_eq!(buffer.read_bulk(&mut outbuff, cs), OUTBUFF_SIZE);
+            assert_eq!(outbuff, [36, 37, 38]);
+            assert_eq!(
+                buffer.read_bulk(&mut outbuff, cs),
+                BUFFER_SIZE % OUTBUFF_SIZE
+            );
+            assert_eq!(&outbuff[..(BUFFER_SIZE % OUTBUFF_SIZE)], &[39]);
+        })
     }
     #[test_case]
     fn test_buffer(_gba: &mut Gba) {
