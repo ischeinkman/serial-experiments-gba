@@ -9,9 +9,11 @@
 pub mod serial;
 pub mod utils;
 
-extern crate alloc; 
+extern crate alloc;
 
 /// Needed to get `agb`'s test harness to work.
 #[cfg(test)]
 #[agb::entry]
-fn main(mut gba : agb::Gba) -> ! { loop {}}
+fn main(mut gba: agb::Gba) -> ! {
+    loop {}
+}

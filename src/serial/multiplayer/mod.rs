@@ -19,13 +19,12 @@ use registers::MultiplayerCommReg;
 /// by a GBA.
 const SENTINEL: u16 = u16::MAX;
 
-
-/// The ID number of a GBA unit in the session. 
+/// The ID number of a GBA unit in the session.
 #[repr(u8)]
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy, Debug, Default)]
 pub enum PlayerId {
-    /// Player 0, AKA the "parent" unit. 
-    /// 
+    /// Player 0, AKA the "parent" unit.
+    ///
     /// This is the only unit allowed to initiate a data transfer, which will
     /// populate all 4 `SIOMULT` registers for every GBA unit in the multiplayer
     /// session.
@@ -40,7 +39,7 @@ pub enum PlayerId {
 }
 
 impl PlayerId {
-    /// An array of all available player IDs for easy iteration. 
+    /// An array of all available player IDs for easy iteration.
     pub const ALL: [PlayerId; 4] = [PlayerId::P0, PlayerId::P1, PlayerId::P2, PlayerId::P3];
 }
 

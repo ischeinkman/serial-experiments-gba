@@ -7,8 +7,6 @@ use alloc::vec;
 
 use super::{PlayerId, SENTINEL};
 
-
-
 /// Ringbuffer for data transfers in multiplayer mode when using the "bulk
 /// transfer" feature.
 pub struct TransferBuffer {
@@ -150,8 +148,8 @@ impl TransferBuffer {
     /// Attempts to read multiple values from the multiplayer buffer in bulk
     /// into the provided buffers.
     ///
-    /// Returns the number of values read per player into each buffer. 
-    /// 
+    /// Returns the number of values read per player into each buffer.
+    ///
     /// # Notes
     /// This function may overwrite the data in `buffers` past the point where
     /// it reports having read until; as such, all data in `buffers` can be
@@ -165,7 +163,7 @@ impl TransferBuffer {
         let prev_ridx = self.read_idx.borrow(cs).get();
         let next = (prev_ridx + inc) % (2 * self.bufflen);
         self.read_idx.borrow(cs).set(next);
-        [inc ; 4]
+        [inc; 4]
     }
     fn read_bulk_for_inner(
         &self,

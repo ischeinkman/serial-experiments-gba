@@ -3,11 +3,11 @@
 use agb::external::critical_section::{self, CriticalSection, Mutex};
 use core::cell::Cell;
 
-/// Reads the `n`th bit from a `u16` as a bool. 
-/// 
+/// Reads the `n`th bit from a `u16` as a bool.
+///
 /// # Examples
 /// ```
-/// let n : u16 = (1 << 3) | (1 << 1); 
+/// let n : u16 = (1 << 3) | (1 << 1);
 /// assert_eq!(read_bit(n, 3), true);
 /// assert_eq!(read_bit(n, 2), false);
 /// assert_eq!(read_bit(n, 1), true);
@@ -21,11 +21,11 @@ pub const fn read_bit(value: u16, n: u8) -> bool {
 pub const fn write_bit(v: u16, n: u8, bit: bool) -> u16 {
     (v & !(1 << n)) | ((bit as u16) << n)
 }
-/// Reads the `n`th bit from a `u8` as a bool. 
-/// 
+/// Reads the `n`th bit from a `u8` as a bool.
+///
 /// # Examples
 /// ```
-/// let n : u8 = (1 << 3) | (1 << 1); 
+/// let n : u8 = (1 << 3) | (1 << 1);
 /// assert_eq!(read_bit(n, 3), true);
 /// assert_eq!(read_bit(n, 2), false);
 /// assert_eq!(read_bit(n, 1), true);
