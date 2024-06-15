@@ -1,6 +1,9 @@
 use super::*;
 
-use agb::interrupt::InterruptHandler;
+use agb::{
+    external::critical_section::CriticalSection,
+    interrupt::{add_interrupt_handler, Interrupt, InterruptHandler},
+};
 use bulk::{BulkInitError, BulkMultiplayer};
 
 use core::{marker::PhantomData, mem};
@@ -11,19 +14,33 @@ mod registers;
 mod ringbuf;
 use registers::MultiplayerCommReg;
 
+/// The value used by the GBA hardware to indicate either an in-progress
+/// transfer or that a slot out of the 4 available ports is currently not used
+/// by a GBA.
 const SENTINEL: u16 = u16::MAX;
 
+
+/// The ID number of a GBA unit in the session. 
 #[repr(u8)]
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy, Debug, Default)]
 pub enum PlayerId {
+    /// Player 0, AKA the "parent" unit. 
+    /// 
+    /// This is the only unit allowed to initiate a data transfer, which will
+    /// populate all 4 `SIOMULT` registers for every GBA unit in the multiplayer
+    /// session.
     #[default]
     P0 = 0,
+    /// Player 1
     P1 = 1,
+    /// Player 2
     P2 = 2,
+    /// Player 3
     P3 = 3,
 }
 
 impl PlayerId {
+    /// An array of all available player IDs for easy iteration. 
     pub const ALL: [PlayerId; 4] = [PlayerId::P0, PlayerId::P1, PlayerId::P2, PlayerId::P3];
 }
 
@@ -87,36 +104,10 @@ impl<'a> MultiplayerSerial<'a> {
         MultiplayerCommReg::get(player).read()
     }
 
-    pub fn initialize_id(&mut self) -> Result<(), TransferError> {
-        const SENTINEL: u16 = 0xFEAD;
-        self.mark_unready();
-        self.write_send_reg(SENTINEL);
-        self.mark_ready();
-        loop {
-            {
-                match self.start_transfer() {
-                    Ok(()) => {}
-                    Err(TransferError::AlreadyInProgress) => {
-                        // Parent beat us to it; let it keep going
-                    }
-                    Err(TransferError::FailedReadyCheck) => {
-                        // Others are lagging; wait for them
-                    }
-                    Err(other) => {
-                        return Err(other);
-                    }
-                };
-            }
-
-            let reg_statuses = MultiplayerCommReg::ALL.map(|reg| reg.read());
-            let my_id = MultiplayerSiocnt::get().id();
-            if reg_statuses[my_id as usize] == Some(SENTINEL) {
-                self.playerid = Some(my_id);
-                break;
-            }
-        }
-        Ok(())
-    }
+    /// Begins a data transfer if this is the parent unit; otherwise verifies
+    /// that all a transfer can be initiated now.
+    ///
+    /// Does NOT block.
     pub fn start_transfer(&self) -> Result<(), TransferError> {
         let siocnt = MultiplayerSiocnt::get();
         if siocnt.busy() {
@@ -124,7 +115,7 @@ impl<'a> MultiplayerSerial<'a> {
         }
         let all_ready = self.all_ready();
         if self.is_parent {
-            MultiplayerSiocnt::get().start_transfer();
+            siocnt.start_transfer();
         }
         if !all_ready {
             return Err(TransferError::FailedReadyCheck);
@@ -139,6 +130,17 @@ impl<'a> MultiplayerSerial<'a> {
     }
     pub fn interrupt_enabled(&self) -> bool {
         MultiplayerSiocnt::get().irq_enabled()
+    }
+    /// Adds an interrupt handler that will be triggered after a transfer
+    /// finishes.
+    ///
+    /// # Safety
+    /// The callback `cb` **must not** allocate on the heap.
+    pub unsafe fn add_interrupt<F>(&mut self, cb: F)
+    where
+        F: Fn(CriticalSection) + Send + Sync + 'static,
+    {
+        self.buffer_interrupt = Some(add_interrupt_handler(Interrupt::Serial, cb));
     }
     /// Checks whether or not all other connected GBAs are ready for transfer.
     pub fn all_ready(&self) -> bool {

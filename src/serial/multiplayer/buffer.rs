@@ -5,9 +5,9 @@ use agb::external::critical_section::{CriticalSection, Mutex};
 use alloc::boxed::Box;
 use alloc::vec;
 
-use super::PlayerId;
+use super::{PlayerId, SENTINEL};
 
-const NO_DATA: u16 = u16::MAX;
+
 
 /// Ringbuffer for data transfers in multiplayer mode when using the "bulk
 /// transfer" feature.
@@ -82,7 +82,7 @@ impl TransferBuffer {
 
     /// Constructs a new multiplayer bulk transfer buffer with the given capacity (per player).
     pub fn new(cap: usize) -> Self {
-        let data = vec![NO_DATA; cap * 4].into_boxed_slice();
+        let data = vec![SENTINEL; cap * 4].into_boxed_slice();
 
         Self {
             buffer: Box::leak(data).as_mut_ptr(),
@@ -131,7 +131,7 @@ impl TransferBuffer {
         let raw_ridx = self.read_idx.borrow(cs).get();
         let raw_widx = self.write_idx.borrow(cs).get();
         if is_empty(raw_ridx, raw_widx, self.bufflen) {
-            return [NO_DATA; 4];
+            return [SENTINEL; 4];
         }
         let ridx = raw_ridx % self.bufflen;
         self.read_idx
@@ -150,12 +150,22 @@ impl TransferBuffer {
     /// Attempts to read multiple values from the multiplayer buffer in bulk
     /// into the provided buffers.
     ///
-    /// Returns the number of values read per player into each buffer.
+    /// Returns the number of values read per player into each buffer. 
+    /// 
+    /// # Notes
+    /// This function may overwrite the data in `buffers` past the point where
+    /// it reports having read until; as such, all data in `buffers` can be
+    /// considered unspecified as soon as it is passed to this function.
     pub fn read_bulk(&self, buffers: &mut [&mut [u16]; 4], cs: CriticalSection<'_>) -> [usize; 4] {
-        PlayerId::ALL.map(move |pid| {
+        let ret = PlayerId::ALL.map(move |pid| {
             let buffer = &mut buffers.as_mut()[pid as usize];
             self.read_bulk_for_inner(cs, pid, buffer.as_mut())
-        })
+        });
+        let inc = ret.into_iter().min().unwrap_or(0);
+        let prev_ridx = self.read_idx.borrow(cs).get();
+        let next = (prev_ridx + inc) % (2 * self.bufflen);
+        self.read_idx.borrow(cs).set(next);
+        [inc ; 4]
     }
     fn read_bulk_for_inner(
         &self,
@@ -218,8 +228,8 @@ mod tests {
     use core::mem;
 
     use super::*;
-    use agb::Gba;
     use agb::external::critical_section;
+    use agb::Gba;
 
     #[test_case]
     fn verify_size(_gba: &mut Gba) {
@@ -263,7 +273,7 @@ mod tests {
                     ]
                 );
             }
-            assert_eq!(buffer.pop(cs), [NO_DATA; 4]);
+            assert_eq!(buffer.pop(cs), [SENTINEL; 4]);
             unsafe {
                 let raw_mem = slice::from_raw_parts(buffer.buffer as *const _, buffer.bufflen * 4);
                 for rawidx in 0..(BUFFER_SIZE * 4) {

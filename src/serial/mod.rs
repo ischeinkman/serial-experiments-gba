@@ -52,6 +52,8 @@ impl RegisterWrapper {
         self.addr.write(write_bit(self.addr.read(), n, value));
     }
 }
+
+/// Helper macro for writing Newtype wrappers that provide ONLY a series of extention methods on top of an existing struct. 
 macro_rules! method_wraps {
     ($child:ty, $field:ident, $parent:ty) => {
         impl AsRef<$parent> for $child {
