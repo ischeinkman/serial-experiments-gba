@@ -240,7 +240,6 @@ mod tests {
     #[test_case]
     fn test_buffer(_gba: &mut Gba) {
         const BUFFER_SIZE: usize = 0x8F;
-        const SENTINEL: u16 = 0xFEEF;
 
         let buffer = unsafe { TransferBuffer::new(BUFFER_SIZE) };
         assert_eq!(buffer.bufflen, BUFFER_SIZE);
@@ -284,6 +283,53 @@ mod tests {
                     );
                 }
             }
+        })
+    }
+    #[test_case]
+    fn test_buffer_bulk(_gba: &mut Gba) {
+        const BUFFER_SIZE: usize = 10;
+        const OUTBUFF_SIZE: usize = 3;
+
+        let buffer = TransferBuffer::new(BUFFER_SIZE);
+        critical_section::with(|cs| {
+            let data = PlayerId::ALL.map(|pid| {
+                let base = [30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41];
+                base.map(|n| n + pid as u16)
+            });
+            for n in 30..42 {
+                let idx = n - 30;
+                let res = buffer.push(n + 100, n + 200, n + 300, n + 400, n as u8, cs);
+                assert_eq!(res.is_ok(), n < 40);
+            }
+            let mut outbuff = [
+                &mut [0xFFFF ; OUTBUFF_SIZE][..], 
+                &mut [0xFFFF ; OUTBUFF_SIZE][..], 
+                &mut [0xFFFF ; OUTBUFF_SIZE][..], 
+                &mut [0xFFFF ; OUTBUFF_SIZE][..], 
+            ];
+            assert_eq!(buffer.read_bulk(&mut outbuff, cs), [OUTBUFF_SIZE; 4]);
+            assert_eq!(
+                outbuff,
+                PlayerId::ALL.map(|pid| [30, 31, 32].map(|n| n + (100 * (pid as u16 + 1))))
+            );
+            assert_eq!(buffer.read_bulk(&mut outbuff, cs), [OUTBUFF_SIZE; 4]);
+            assert_eq!(
+                outbuff,
+                PlayerId::ALL.map(|pid| [33, 34, 35].map(|n| n + (100 * (pid as u16 + 1))))
+            );
+            assert_eq!(buffer.read_bulk(&mut outbuff, cs), [OUTBUFF_SIZE; 4]);
+            assert_eq!(
+                outbuff,
+                PlayerId::ALL.map(|pid| [36, 37, 38].map(|n| n + (100 * (pid as u16 + 1))))
+            );
+            assert_eq!(
+                buffer.read_bulk(&mut outbuff, cs),
+                [(BUFFER_SIZE % OUTBUFF_SIZE); 4]
+            );
+            assert_eq!(
+                outbuff.map(|slc| &slc[..(BUFFER_SIZE % OUTBUFF_SIZE)]),
+                PlayerId::ALL.map(|pid| [39].map(|n| n + (100 * (pid as u16 + 1))))
+            );
         })
     }
 }
