@@ -106,7 +106,7 @@ fn multiplayer_test_main(mut _gba: Gba) -> ! {
             }
             write!(&mut msg, ": ?? // ").ok();
             let read = readcounts[pid as usize];
-            writeln!(&mut msg, "{} - {:?}", read, &buffers[..read]).ok();
+            writeln!(&mut msg, "{} - {:?}", read, &buffers[pid as usize][..read]).ok();
         }
         println!("{}", msg);
         loopcnt += 1;

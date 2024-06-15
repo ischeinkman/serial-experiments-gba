@@ -165,8 +165,8 @@ impl Ringbuffer {
 /// the ringbuffer length and raw read & write indices (mod 2 * the buffer
 /// length).
 #[inline(always)]
-const fn len(ridx: usize, widx: usize, _bufflen: usize) -> usize {
-    widx - ridx
+const fn len(ridx: usize, widx: usize, bufflen: usize) -> usize {
+    ((widx + 2 * bufflen) - ridx) % (2 * bufflen)
 }
 
 /// Checks if the ringbuffer is full based on the ringbuffer length and raw read
