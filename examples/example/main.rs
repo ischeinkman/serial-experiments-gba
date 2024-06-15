@@ -56,10 +56,9 @@ const TO_CHECK: &[Button] = &[
 
 fn parse_buttons(n: u16) -> Vec<Button> {
     let mut retvl = Vec::new();
-    for idx in 0..TO_CHECK.len() {
-        let mask = 1 << idx;
+    for (idx, btn) in TO_CHECK.iter().enumerate() {
         if read_bit(n, idx as u8) {
-            retvl.push(TO_CHECK[idx]);
+            retvl.push(*btn);
         }
     }
     retvl
@@ -67,7 +66,7 @@ fn parse_buttons(n: u16) -> Vec<Button> {
 
 fn write_buttons(btns: &ButtonController) -> u16 {
     let mut n = 0u16;
-    for (idx, btn) in TO_CHECK.into_iter().enumerate() {
+    for (idx, btn) in TO_CHECK.iter().enumerate() {
         let idx = idx as u8;
         let state = btns.is_pressed(*btn);
         let edge = btns.is_just_pressed(*btn);

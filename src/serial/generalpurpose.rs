@@ -219,6 +219,7 @@ impl GpioState {
             value: (rcnt & 0xFF) as u8,
         }
     }
+    #[allow(unused)]
     const fn into_rcnt(self) -> u16 {
         self.value as u16
     }
