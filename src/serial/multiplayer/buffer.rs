@@ -251,7 +251,7 @@ mod tests {
     fn test_buffer(_gba: &mut Gba) {
         const BUFFER_SIZE: usize = 0x8F;
 
-        let buffer = unsafe { TransferBuffer::new(BUFFER_SIZE) };
+        let buffer = TransferBuffer::new(BUFFER_SIZE);
         assert_eq!(buffer.bufflen, BUFFER_SIZE);
 
         for n in 0..(BUFFER_SIZE * 2) {
@@ -302,12 +302,7 @@ mod tests {
 
         let buffer = TransferBuffer::new(BUFFER_SIZE);
         critical_section::with(|cs| {
-            let data = PlayerId::ALL.map(|pid| {
-                let base = [30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41];
-                base.map(|n| n + pid as u16)
-            });
             for n in 30..42 {
-                let idx = n - 30;
                 let res = buffer.push(n + 100, n + 200, n + 300, n + 400, n as u8, cs);
                 assert_eq!(res.is_ok(), n < 40);
             }
