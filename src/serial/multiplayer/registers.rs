@@ -1,4 +1,4 @@
-use super::PlayerId;
+use super::{PlayerId, NO_DATA};
 use voladdress::{Safe, VolAddress};
 
 const SIOMULTI0: VolAddress<u16, Safe, Safe> = unsafe { VolAddress::new(0x4000120) };
@@ -52,7 +52,7 @@ impl MultiplayerCommReg {
 
     pub fn read(&self) -> Option<u16> {
         let raw = self.raw_read();
-        if raw == 0xFFFF {
+        if raw == NO_DATA {
             None
         } else {
             Some(raw)

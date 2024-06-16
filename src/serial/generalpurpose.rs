@@ -49,12 +49,6 @@ impl<'a> GeneralPurpose<'a> {
             interrupt_handle: None,
         }
     }
-    pub fn from_handle<'b: 'a>(_handle: &'a mut PhantomData<&'b mut Serial>) -> Self {
-        Self {
-            _handle: PhantomData,
-            interrupt_handle: None,
-        }
-    }
     pub fn gpio_config(&self) -> GpioConfig {
         GpioConfig::from_rcnt(RcntWrapper::new().read())
     }

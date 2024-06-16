@@ -97,9 +97,12 @@ impl<T> GbaCell<T> {
 }
 
 impl<T: Copy> GbaCell<T> {
+    /// Gets a copy of the value currently stored in this cell.
     pub fn get_copy(&self) -> T {
         critical_section::with(|cs| self.get_copy_in(cs))
     }
+    /// Gets a copy of the value currently stored in this cell, for use during
+    /// an interrupt's critical section.
     pub fn get_copy_in(&self, cs: CriticalSection) -> T {
         self.inner.borrow(cs).get()
     }

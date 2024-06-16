@@ -7,6 +7,9 @@ use voladdress::{Safe, VolAddress};
 
 use crate::utils::{read_bit, write_bit};
 
+pub mod generalpurpose;
+pub mod multiplayer;
+
 #[derive(Default)]
 pub struct Serial {
     _phanton: PhantomData<()>,
@@ -27,11 +30,15 @@ const SIOMLT_SEND: VolAddress<u16, Safe, Safe> = unsafe { VolAddress::new(0x4000
 pub enum Pin {
     SC = 0,
     SD = 1,
+
+    /// The data pin connected to the GBA's Serial Interrupt hardware.
     SI = 2,
     SO = 3,
 }
 
-pub struct RegisterWrapper {
+/// Helper to wrap a `u16` hardware register in a way that allows easy reading &
+/// writing of both full values and individual bits.
+struct RegisterWrapper {
     addr: VolAddress<u16, Safe, Safe>,
 }
 
@@ -79,8 +86,9 @@ macro_rules! method_wraps {
         }
     };
 }
+use method_wraps;
 
-pub struct RcntWrapper {
+struct RcntWrapper {
     reg: RegisterWrapper,
 }
 method_wraps!(RcntWrapper, reg, RegisterWrapper);
@@ -90,6 +98,8 @@ impl Default for RcntWrapper {
         RcntWrapper::new()
     }
 }
+
+#[allow(unused)]
 impl RcntWrapper {
     pub const fn new() -> Self {
         Self {
@@ -205,17 +215,19 @@ impl RcntWrapper {
 
 #[derive(Clone, Copy, Eq, PartialEq, Hash, Debug)]
 pub enum SerialMode {
+    /// A one-way broadcast mode where a single unit sends data to up to 3 other units at a speed of up to 2 MB/s.
     Normal,
+    /// The most common mode for multiplayer games where 4 units communicate with eachother at up to 14 KB/s. 
     Multiplayer,
+    /// Allows the serial port to be used for UART communication.
     Uart,
+    /// A Nintendo-proprietary peripheral protocol; unsure what this was used for? 
     Joybus,
+    /// Allows the serial port's pins to be used as arbitrary GPIO.
     Gpio,
 }
 
-pub mod generalpurpose;
-pub mod multiplayer;
-
-pub struct SiocntWrapper {
+struct SiocntWrapper {
     reg: RegisterWrapper,
 }
 
@@ -230,9 +242,18 @@ impl SiocntWrapper {
     pub const fn get() -> Self {
         Self::new()
     }
+
+    /// Retrieves the mode currently set in the SIOCNT register. 
+    /// 
+    /// Note that this function alone is NOT SUFFICIENT to determine what mode
+    /// we're in, since some modes only manipulate the RCNT register; as such,
+    /// the correct way to determine the current mode is to first call
+    /// [RcntWrapper::mode] and then only check this value if that function
+    /// returns [None].
+    #[allow(unused)]
     pub fn mode(&self) -> SerialMode {
         let value = self.reg.read();
-        if read_bit(value, 13) {
+        if !read_bit(value, 13) {
             SerialMode::Normal
         } else if read_bit(value, 12) {
             SerialMode::Uart
@@ -240,13 +261,21 @@ impl SiocntWrapper {
             SerialMode::Multiplayer
         }
     }
+    /// Writes the minimal bits in the SIOCNT register needed to change the
+    /// serial port to the specified mode. All other bits remain unchanged.
+    ///
+    /// Note that different serial modes require a different number of bits to
+    /// be set, and some don't even require any; in this case the unecessary
+    /// bits will remain untouched.
     pub fn set_mode(&self, mode: SerialMode) {
         let prev = self.reg.read();
         let next = match mode {
             SerialMode::Normal => write_bit(prev, 13, false),
             SerialMode::Multiplayer => write_bit(write_bit(prev, 12, false), 13, true),
             SerialMode::Uart => write_bit(write_bit(prev, 12, true), 13, true),
-            _ => prev,
+            _ => {
+                return;
+            }
         };
         self.reg.write(next);
     }

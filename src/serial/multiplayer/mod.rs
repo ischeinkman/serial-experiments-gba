@@ -1,3 +1,6 @@
+//! The most common GBA communication mode for multiplayer games, whereby up to
+//! 4 units are connected via link cable and sync data 1 `u16` at a time.
+
 use super::*;
 
 use agb::{
@@ -17,9 +20,10 @@ use registers::MultiplayerCommReg;
 /// The value used by the GBA hardware to indicate either an in-progress
 /// transfer or that a slot out of the 4 available ports is currently not used
 /// by a GBA.
-const SENTINEL: u16 = u16::MAX;
+pub const NO_DATA: u16 = 0xFFFF;
 
-/// The ID number of a GBA unit in the session.
+/// The ID number of a GBA unit in the session. This is assigned by the hardware
+/// itself and will not change as long as the session continues. 
 #[repr(u8)]
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy, Debug, Default)]
 pub enum PlayerId {
@@ -43,6 +47,13 @@ impl PlayerId {
     pub const ALL: [PlayerId; 4] = [PlayerId::P0, PlayerId::P1, PlayerId::P2, PlayerId::P3];
 }
 
+/// The top-level handle for interacting with a GBA serial link cable
+/// multiplayer session. 
+/// 
+/// Use this if you want low-level control of the multiplayer session.
+/// Otherwise, create this with [MultiplayerSerial::new] and then immediately
+/// convert it into a higher-level interface using
+/// [MultiplayerSerial::enable_bulk_mode].
 pub struct MultiplayerSerial<'a> {
     _handle: PhantomData<&'a mut Serial>,
     buffer_interrupt: Option<InterruptHandler>,
@@ -51,6 +62,8 @@ pub struct MultiplayerSerial<'a> {
     rate: BaudRate,
 }
 
+/// Helper to re-enter multiplayer mode after switching modes to mark ourselves
+/// as unready.
 fn enter_multiplayer(rate: BaudRate) -> Result<(), MultiplayerError> {
     let rcnt = RcntWrapper::get();
     let siocnt = MultiplayerSiocnt::get();
@@ -96,11 +109,21 @@ impl<'a> MultiplayerSerial<'a> {
     pub fn enable_bulk_mode(self, buffer_cap: usize) -> Result<BulkMultiplayer<'a>, BulkInitError> {
         BulkMultiplayer::new(self, buffer_cap)
     }
+    /// Queue the next word that will be sent to the other GBAs in the session
+    /// directly into the send register.
+    /// 
+    /// Previous values will be overwritten. 
     pub fn write_send_reg(&mut self, data: u16) {
         SIOMLT_SEND.write(data)
     }
-    pub fn read_player_reg_raw(&self, player: PlayerId) -> Option<u16> {
-        MultiplayerCommReg::get(player).read()
+    /// Reads the raw value in the given player's receive register. 
+    /// 
+    /// This value will be [NO_DATA] if:
+    /// * The player is not currently connected
+    /// * We are currently in the middle of a data transfer
+    /// * The player sent a literal [NO_DATA] value
+    pub fn read_player_reg_raw(&self, player: PlayerId) -> u16 {
+        MultiplayerCommReg::get(player).raw_read()
     }
 
     /// Begins a data transfer if this is the parent unit; otherwise verifies
@@ -124,14 +147,17 @@ impl<'a> MultiplayerSerial<'a> {
         }
         Ok(())
     }
+    /// Enables the SERIAL interrupt, which will trigger after each word is
+    /// transfered. 
     pub fn enable_interrupt(&self, should_enable: bool) {
         MultiplayerSiocnt::get().enable_irq(should_enable)
     }
+    /// Whether or not the SERIAL interrupt is currently enabled. 
     pub fn interrupt_enabled(&self) -> bool {
         MultiplayerSiocnt::get().irq_enabled()
     }
     /// Adds an interrupt handler that will be triggered after a transfer
-    /// finishes.
+    /// finishes, assuming you also call [Self::enable_interrupt].
     ///
     /// # Safety
     /// The callback `cb` **must not** allocate on the heap.
@@ -160,8 +186,31 @@ impl<'a> MultiplayerSerial<'a> {
         mark_unready()
     }
 
-    pub fn id(&self) -> Option<PlayerId> {
-        self.playerid
+    /// Attempts to retrieve the current player ID. 
+    /// 
+    /// # Safety
+    /// This value is only valid if one of the following is true:
+    /// * This unit is the parent unit (IE [PlayerId::P0])
+    /// * We have, at some point, entered [BulkMultiplayer] mode and then left
+    ///   with [BulkMultiplayer::leave]
+    /// * We have already transfered at least 1 message in this session
+    /// 
+    /// Otherwise, the value read from this function will be garbage. Note that
+    /// this *technically* means that this function is not *actually* `unsafe`
+    /// by Rust definition (since it will always return *some* valid value of
+    /// [PlayerId]) but still requires the user to uphold unchecked invariants
+    /// to get any use from it so it is marked `unsafe` to force the user to
+    /// gurantee this. 
+    pub unsafe fn id(&self) -> PlayerId {
+        if let Some(retvl) = self.playerid {
+            retvl
+        }
+        else if self.is_parent {
+            PlayerId::P0
+        }
+        else {
+            MultiplayerSiocnt::get().id()
+        }
     }
 }
 
@@ -180,9 +229,11 @@ pub enum MultiplayerError {
     FailedOkayCheck,
     /// Not all GBAs were ready for the transfer (though the transfer was still attempted)
     FailedReadyCheck,
-    BufferLengthMismatch, 
+    BufferLengthMismatch,
 }
 
+/// How fast data can be transfered in multiplayer mode (measured in
+/// bits-per-second).
 #[repr(u8)]
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy, Debug, Default)]
 pub enum BaudRate {
@@ -191,6 +242,27 @@ pub enum BaudRate {
     B38400 = 1,
     B57600 = 2,
     B115200 = 3,
+}
+
+impl BaudRate {
+    /// How many of bits can be transfered in a single second.
+    pub const fn baud(self) -> u32 {
+        use BaudRate::*;
+        match self {
+            B9600 => 9600,
+            B38400 => 38400,
+            B57600 => 57600,
+            B115200 => 115200,
+        }
+    }
+    /// How many 2-byte words can be transfered in a second.
+    pub const fn words_per_second(self) -> u16 {
+        (self.baud() / 16) as u16
+    }
+    /// How many 2-byte words can be transfered in a frame.
+    pub const fn words_per_frame(self) -> u16 {
+        self.words_per_second() / 60
+    }
 }
 
 /// Newtype extention wrapper around the Serial I/O Control register with extra
@@ -210,7 +282,7 @@ pub enum BaudRate {
 /// | 13  | Must be "1" for Multi-Player mode |
 /// | 14  | IRQ Enable         | (0=Disable, 1=Want IRQ upon completion)
 /// | 15  | Not used           | (Read only, always 0)
-pub struct MultiplayerSiocnt {
+struct MultiplayerSiocnt {
     inner: SiocntWrapper,
 }
 
@@ -225,6 +297,7 @@ impl MultiplayerSiocnt {
     pub const fn get() -> Self {
         Self::new()
     }
+    #[allow(unused)]
     pub fn baud_rate(&self) -> BaudRate {
         let v = self.read();
         let bits = (v & 3) as u8;

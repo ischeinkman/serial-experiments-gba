@@ -19,7 +19,7 @@
 //!
 //! # Notes
 //! * Due to GBA hardware quirks it is impossible to distinguish between a unit
-//!   not being connected and a unit sending a `0xFFFF`. As such be sure to not
+//!   not being connected and a unit sending a [NO_DATA]. As such be sure to not
 //!   send that value as part of your transfer if you don't want to lose
 //!   information.
 //! * This mode currently assumes that all units will attempt to call
@@ -35,7 +35,7 @@ use crate::utils::GbaCell;
 use super::ringbuf::Ringbuffer;
 use super::{
     buffer::TransferBuffer, mark_unready, MultiplayerCommReg, MultiplayerError, MultiplayerSerial,
-    MultiplayerSiocnt, PlayerId, SENTINEL, SIOMLT_SEND,
+    MultiplayerSiocnt, PlayerId, NO_DATA, SIOMLT_SEND,
 };
 use super::{enter_multiplayer, TransferError};
 
@@ -143,14 +143,14 @@ impl<'a> BulkMultiplayer<'a> {
     /// Due to how GBA multiplayer communication works, it is entirely possible
     /// to have a data transfer where only a single unit blasts data to up to 3
     /// other units without those units sending anything back; this is
-    /// equivalent to all other units sending a `0xFFFF`, which would also be
+    /// equivalent to all other units sending a [NO_DATA], which would also be
     /// the case if they were, say, initializing their ID bits or attempting to
     /// eavesdrop. This means the inbox will quickly fill itself with the data
     /// from the outbox without actually storing any meaningful data, possibly
     /// losing some in the process if things get really bad.
     ///
     /// To help deal with this problem we have this function that will skip any
-    /// transfer where all units aside from us sent over `0xFFFF`.
+    /// transfer where all units aside from us sent over [NO_DATA].
     pub fn skip_empty_transfers(&mut self) -> usize {
         let mut retvl = 0;
         loop {
@@ -161,7 +161,7 @@ impl<'a> BulkMultiplayer<'a> {
             let is_empty = next
                 .into_iter()
                 .enumerate()
-                .all(|(idx, n)| n == SENTINEL || idx == (self.id() as usize));
+                .all(|(idx, n)| n == NO_DATA || idx == (self.id() as usize));
             if !is_empty {
                 break;
             }
@@ -252,7 +252,7 @@ impl<'a> BulkMultiplayer<'a> {
 /// sentinel value.
 fn initialize_id(inner: &mut MultiplayerSerial) -> Result<(), TransferError> {
     inner.mark_unready();
-    inner.write_send_reg(SENTINEL);
+    inner.write_send_reg(NO_DATA);
     let interrupt_handle = unsafe {
         add_interrupt_handler(Interrupt::Serial, |cs| {
             TRANSFER_COUNTER.lock_mut_in(cs, |n| {
@@ -304,7 +304,7 @@ fn bulk_mode_interrupt_callback(cs: CriticalSection<'_>) {
     let p2 = MultiplayerCommReg::get(PlayerId::P2).raw_read();
     let p3 = MultiplayerCommReg::get(PlayerId::P3).raw_read();
 
-    if !(p0 == SENTINEL && p1 == SENTINEL && p2 == SENTINEL && p3 == SENTINEL) {
+    if !(p0 == NO_DATA && p1 == NO_DATA && p2 == NO_DATA && p3 == NO_DATA) {
         // This will only happen if NONE of the units had data to send,
         // INCLUDING US, and ALL of them set `block_transfers_until_have_data`
         // to `false`. In that case we'd hit this case every time the parent
@@ -322,7 +322,7 @@ fn bulk_mode_interrupt_callback(cs: CriticalSection<'_>) {
         if let Some(nxt) = next {
             SIOMLT_SEND.write(nxt);
         } else {
-            SIOMLT_SEND.write(SENTINEL);
+            SIOMLT_SEND.write(NO_DATA);
             if BLOCK_TRANSFER_UNTIL_SEND.get_copy_in(cs) {
                 mark_unready()
             }

@@ -5,7 +5,7 @@ use agb::external::critical_section::{CriticalSection, Mutex};
 use alloc::boxed::Box;
 use alloc::vec;
 
-use super::SENTINEL;
+use super::NO_DATA;
 
 /// Ringbuffer for data transfers in multiplayer mode when using the "bulk
 /// transfer" feature.
@@ -80,7 +80,7 @@ impl Ringbuffer {
 
     /// Constructs a new ringbuffer with the given capacity.
     pub fn new(cap: usize) -> Self {
-        let data = vec![SENTINEL; cap].into_boxed_slice();
+        let data = vec![NO_DATA; cap].into_boxed_slice();
 
         Self {
             buffer: Box::leak(data).as_mut_ptr(),

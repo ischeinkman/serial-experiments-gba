@@ -6,7 +6,8 @@
 #![cfg_attr(test, test_runner(agb::test_runner::test_runner))]
 #![allow(clippy::assertions_on_constants)]
 
-pub mod serial;
+mod serial;
+pub use serial::*;
 pub mod utils;
 
 extern crate alloc;

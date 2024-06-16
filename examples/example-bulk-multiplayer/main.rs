@@ -21,7 +21,7 @@ use alloc::format;
 use core::fmt::Write;
 mod logs;
 use logs::Logger;
-use serial_experiments_gba::serial::multiplayer::{BaudRate, MultiplayerSerial, PlayerId};
+use serial_experiments_gba::{multiplayer::NO_DATA, serial::multiplayer::{BaudRate, MultiplayerSerial, PlayerId}};
 use serial_experiments_gba::serial::Serial;
 
 #[agb::entry]
@@ -142,7 +142,7 @@ fn multiplayer_test_main(mut _gba: Gba) -> ! {
             que.extend(buf.iter().copied());
 
             // Skip any NULL bytes, meaning the unit didn't send any data.
-            while que.front().copied() == Some(0xFFFF) {
+            while que.front().copied() == Some(NO_DATA) {
                 que.pop_front();
             }
 
