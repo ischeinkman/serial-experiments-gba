@@ -10,18 +10,18 @@ use super::SENTINEL;
 /// Ringbuffer for data transfers in multiplayer mode when using the "bulk
 /// transfer" feature.
 pub struct Ringbuffer {
-    /// The head of the memory block. Should always point to an allocation of exactly `4 * self.bufflen` elements.
+    /// The head of the memory block. Should always point to an allocation of exactly `self.bufflen` elements.
     buffer: *mut u16,
-    /// The maximum number of elements the buffer can store *per player*.
+    /// The maximum number of elements the buffer can store.
     bufflen: usize,
-    /// The next valid location to read for each player.
+    /// The next valid location to read.
     ///
     /// Note that this value is modulus `2 * self.bufflen` instead of
     /// `self.bufflen` so we can distinguish when the buffer is "empty"
     /// (`self.read_idx == self.write_idx`) from the "full" (`self.read_idx +
     /// self.bufflen == self.write_idx`).
     read_idx: Mutex<Cell<usize>>,
-    /// The next valid location to write for each player.
+    /// The next valid location to write.
     ///
     /// Note that this value is modulus `2 * self.bufflen` instead of
     /// `self.bufflen` so we can distinguish when the buffer is "empty"
@@ -52,7 +52,7 @@ impl Drop for Ringbuffer {
             return;
         }
         unsafe {
-            let slice_ptr = ptr::slice_from_raw_parts_mut(self.buffer, 4 * self.bufflen);
+            let slice_ptr = ptr::slice_from_raw_parts_mut(self.buffer, self.bufflen);
             drop(Box::from_raw(slice_ptr));
         };
     }
@@ -80,7 +80,7 @@ impl Ringbuffer {
 
     /// Constructs a new ringbuffer with the given capacity.
     pub fn new(cap: usize) -> Self {
-        let data = vec![SENTINEL; cap * 4].into_boxed_slice();
+        let data = vec![SENTINEL; cap].into_boxed_slice();
 
         Self {
             buffer: Box::leak(data).as_mut_ptr(),
@@ -102,7 +102,6 @@ impl Ringbuffer {
         self.write_idx
             .borrow(cs)
             .replace((raw_widx + 1) % (2 * self.bufflen));
-        //TODO: Deal with flags
         Ok(())
     }
     pub fn pop(&self, cs: CriticalSection) -> Option<u16> {
