@@ -96,7 +96,6 @@ fn multiplayer_test_main(mut _gba: Gba) -> ! {
             .unwrap();
         println!("Queued send buffer.");
 
-        let mut msg = format!("Current loop: {:03} \n", loopcnt,);
 
         // Skip any transfers where we didn't see any data from anyone but
         // ourselves; this can happen if, for example, we're the parent unit and
@@ -127,14 +126,14 @@ fn multiplayer_test_main(mut _gba: Gba) -> ! {
             p3_buff.as_mut_slice(),
         ];
         multiplayer_handle.read_bulk(&mut buffers).unwrap();
-        println!("RAW BUFFERS:");
-        for (idx, b) in buffers.iter().enumerate() {
-            if idx == multiplayer_handle.id() as usize {
-                println!("    {:0X?} | SELF", b);
-            } else {
-                println!("    {:0X?}", b);
-            }
-        }
+
+        // Now its time to report what we've found!
+        //
+        // To make the log easier to read we pre-buffer the output message
+        // instead of directly printing it line-by-line. This makes sure we
+        // don't accidentally interleave reports between all the different mgba
+        // instances in the multiplayer session.
+        let mut msg = format!("Current loop: {:03} \n", loopcnt,);
         for pid in PlayerId::ALL {
             let buf = &buffers[pid as usize];
             let que = &mut queues[pid as usize];
