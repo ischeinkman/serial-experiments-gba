@@ -220,9 +220,13 @@ impl<'a> BulkMultiplayer<'a> {
         self.inner
     }
 
+    /// Whether or not all data transfers for all other GBAs in the session will be
+    /// blocked until we ourselves also write data to be sent out.
     pub fn will_block_transfers(&self) -> bool {
         BLOCK_TRANSFER_UNTIL_SEND.get_copy()
     }
+    /// Sets whether or not all data transfers for all other GBAs in the session will be
+    /// blocked until we ourselves also write data to be sent out.
     pub fn block_transfers_until_have_data(&mut self, value: bool) {
         BLOCK_TRANSFER_UNTIL_SEND.swap(value);
     }

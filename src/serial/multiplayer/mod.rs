@@ -9,7 +9,7 @@ use bulk::{BulkInitError, BulkMultiplayer};
 use core::{marker::PhantomData, mem};
 
 mod buffer;
-mod bulk;
+pub mod bulk;
 mod registers;
 mod ringbuf;
 use registers::MultiplayerCommReg;
