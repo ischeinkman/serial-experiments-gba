@@ -68,5 +68,3 @@ macro_rules! println {
         );
     }};
 }
-
-pub use println;

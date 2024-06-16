@@ -21,12 +21,8 @@ use alloc::format;
 use core::fmt::Write;
 mod logs;
 use logs::Logger;
-use serial::{
-    multiplayer::{BaudRate, MultiplayerSerial, PlayerId},
-    Serial,
-};
-use serial_experiments_gba::*;
-pub use utils::*;
+use serial_experiments_gba::serial::multiplayer::{BaudRate, MultiplayerSerial, PlayerId};
+use serial_experiments_gba::serial::Serial;
 
 #[agb::entry]
 fn main(mut gba: agb::Gba) -> ! {
@@ -101,7 +97,7 @@ fn multiplayer_test_main(mut _gba: Gba) -> ! {
         println!("Queued send buffer.");
 
         let mut msg = format!("Current loop: {:03} \n", loopcnt,);
-        
+
         // Skip any transfers where we didn't see any data from anyone but
         // ourselves; this can happen if, for example, we're the parent unit and
         // the children aren't blocking us or if the children are sending NULL
@@ -109,17 +105,17 @@ fn multiplayer_test_main(mut _gba: Gba) -> ! {
         let skipped = multiplayer_handle.skip_empty_transfers();
         println!("Skipped {} empty transfers.", skipped);
 
-        // Pull in some data from the queue. 
+        // Pull in some data from the queue.
         //
         // Generally one would assume we'd see `WORDS_PER_BLOCK` words at a
         // time; however, if we're missing a sibling or out of sync with the
         // parent we could end up with either NULL bytes or partial messages
         // being in the queue when we're reading it. To get around this we pull
         // in data into our own separate VecDeque instances that we can parse at
-        // our leisure. 
+        // our leisure.
         //
         // This is generally a good practice since it allows an easier time
-        // pulling and parsing larger messages. 
+        // pulling and parsing larger messages.
         let mut p0_buff = [0; 10];
         let mut p1_buff = [0; 10];
         let mut p2_buff = [0; 10];
@@ -146,7 +142,7 @@ fn multiplayer_test_main(mut _gba: Gba) -> ! {
             // Add the new data into the parsing queue
             que.extend(buf.iter().copied());
 
-            // Skip any NULL bytes, meaning the unit didn't send any data. 
+            // Skip any NULL bytes, meaning the unit didn't send any data.
             while que.front().copied() == Some(0xFFFF) {
                 que.pop_front();
             }
@@ -158,7 +154,7 @@ fn multiplayer_test_main(mut _gba: Gba) -> ! {
             }
 
             if que.len() >= WORDS_PER_BLOCK {
-                // We have a full message; parse it. 
+                // We have a full message; parse it.
                 let mut buf = [0x0000; WORDS_PER_BLOCK];
                 for slot in buf.iter_mut() {
                     *slot = que.pop_front().unwrap();
@@ -189,7 +185,6 @@ mod protocol {
     use agb::input::{Button, ButtonController};
 
     use alloc::vec::Vec;
-    use serial_experiments_gba::*;
 
     const TO_CHECK: &[Button] = &[
         Button::UP,
