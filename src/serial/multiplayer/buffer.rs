@@ -125,24 +125,34 @@ impl TransferBuffer {
         //TODO: Deal with flags
         Ok(())
     }
-    pub fn pop(&self, cs: CriticalSection) -> [u16; 4] {
+    /// Pops a single data transfer from the head of the ring buffer.
+    ///
+    /// Returns the words in the transfer, or `None` if the buffer is empty.
+    pub fn pop(&self, cs: CriticalSection) -> Option<[u16; 4]> {
+        let retvl = self.peak(cs);
         let raw_ridx = self.read_idx.borrow(cs).get();
-        let raw_widx = self.write_idx.borrow(cs).get();
-        if is_empty(raw_ridx, raw_widx, self.bufflen) {
-            return [SENTINEL; 4];
-        }
-        let ridx = raw_ridx % self.bufflen;
         self.read_idx
             .borrow(cs)
             .replace((raw_ridx + 1) % (2 * self.bufflen));
+        retvl
+    }
+
+    /// Peaks at the next data in the ringbuffer without consume it.
+    pub fn peak(&self, cs: CriticalSection) -> Option<[u16; 4]> {
+        let raw_ridx = self.read_idx.borrow(cs).get();
+        let raw_widx = self.write_idx.borrow(cs).get();
+        if is_empty(raw_ridx, raw_widx, self.bufflen) {
+            return None;
+        }
+        let ridx = raw_ridx % self.bufflen;
 
         unsafe {
-            [
+            Some([
                 self.player_buffer_start(PlayerId::P0).add(ridx).read(),
                 self.player_buffer_start(PlayerId::P1).add(ridx).read(),
                 self.player_buffer_start(PlayerId::P2).add(ridx).read(),
                 self.player_buffer_start(PlayerId::P3).add(ridx).read(),
-            ]
+            ])
         }
     }
     /// Attempts to read multiple values from the multiplayer buffer in bulk
@@ -262,15 +272,15 @@ mod tests {
                 let next = buffer.pop(cs);
                 assert_eq!(
                     next,
-                    [
+                    Some([
                         (n as u16) + 0x0000,
                         (n as u16) + 0x1000,
                         (n as u16) + 0x2000,
                         (n as u16) + 0x3000,
-                    ]
+                    ])
                 );
             }
-            assert_eq!(buffer.pop(cs), [SENTINEL; 4]);
+            assert_eq!(buffer.pop(cs), None);
             unsafe {
                 let raw_mem = slice::from_raw_parts(buffer.buffer as *const _, buffer.bufflen * 4);
                 for rawidx in 0..(BUFFER_SIZE * 4) {

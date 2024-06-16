@@ -24,6 +24,7 @@ use agb::{
     Gba,
 };
 
+use alloc::collections::VecDeque;
 use alloc::{format, vec::Vec};
 use core::fmt::Write;
 use logs::Logger;
@@ -123,19 +124,35 @@ fn multiplayer_test_main(mut _gba: Gba) -> ! {
         println!("Queued send buffer.");
 
         let mut msg = format!("Current loop: {:03} \n", loopcnt,);
-        let mut p0_buff = [0xFFFFu16; WORDS_PER_BLOCK];
-        let mut p1_buff = [0xFFFFu16; WORDS_PER_BLOCK];
-        let mut p2_buff = [0xFFFFu16; WORDS_PER_BLOCK];
-        let mut p3_buff = [0xFFFFu16; WORDS_PER_BLOCK];
+        let mut queues = [const { VecDeque::new() }; 4];
+        let mut p0_buff = [0xFFEFu16; WORDS_PER_BLOCK];
+        let mut p1_buff = [0xFFEFu16; WORDS_PER_BLOCK];
+        let mut p2_buff = [0xFFEFu16; WORDS_PER_BLOCK];
+        let mut p3_buff = [0xFFEFu16; WORDS_PER_BLOCK];
         let mut buffers = [
             p0_buff.as_mut_slice(),
             p1_buff.as_mut_slice(),
             p2_buff.as_mut_slice(),
             p3_buff.as_mut_slice(),
         ];
+        let skipped = multiplayer_handle.skip_empty_transfers();
+        println!("Skipped {} empty transfers.", skipped);
         multiplayer_handle.read_all(&mut buffers).unwrap();
-
+        println!("RAW BUFFERS:");
+        for (idx, b) in buffers.iter().enumerate() {
+            if idx == multiplayer_handle.id() as usize {
+                println!("    {:0X?} | SELF", b);
+            } else {
+                println!("    {:0X?}", b);
+            }
+        }
         for pid in PlayerId::ALL {
+            let buf = &buffers[pid as usize];
+            let que = &mut queues[pid as usize];
+            que.extend(buf.iter().copied());
+        }
+        for pid in PlayerId::ALL {
+            let que = &mut queues[pid as usize];
             write!(&mut msg, "  -  Player {}", pid as u8).ok();
             if pid == multiplayer_handle.id() {
                 write!(&mut msg, "(Self)").ok();
@@ -143,10 +160,21 @@ fn multiplayer_test_main(mut _gba: Gba) -> ! {
                 write!(&mut msg, "      ").ok();
             }
             write!(&mut msg, ": ?? // ").ok();
-            let buf = &[p0_buff, p1_buff, p2_buff, p3_buff][pid as usize];
-            write!(&mut msg, "{:?}", &buf).ok();
-            writeln!(&mut msg, " => {:?}", parse_buttons(buf)).ok();
+            while que.front().copied() == Some(0xFFFF) {
+                que.pop_front();
+            }
+            if que.len() >= WORDS_PER_BLOCK {
+                let mut buf = [0x0000; WORDS_PER_BLOCK];
+                for slot in buf.iter_mut() {
+                    *slot = que.pop_front().unwrap();
+                }
+                write!(&mut msg, "{:?}", &buf).ok();
+                writeln!(&mut msg, " => {:?}", parse_buttons(&buf)).ok();
+            } else {
+                writeln!(&mut msg, "Queue size is only {}", que.len()).ok();
+            }
         }
+        println!("{}", msg);
         loopcnt += 1;
     }
     drop(_vblank_handle);

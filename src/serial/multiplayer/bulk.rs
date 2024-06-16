@@ -137,6 +137,41 @@ impl<'a> BulkMultiplayer<'a> {
         unsafe { self.inner.playerid.unwrap_unchecked() }
     }
 
+    /// Helper method to skip any transfers where no other unit sent data.
+    /// Returns the number of skipped transfers.
+    ///
+    /// Due to how GBA multiplayer communication works, it is entirely possible
+    /// to have a data transfer where only a single unit blasts data to up to 3
+    /// other units without those units sending anything back; this is
+    /// equivalent to all other units sending a `0xFFFF`, which would also be
+    /// the case if they were, say, initializing their ID bits or attempting to
+    /// eavesdrop. This means the inbox will quickly fill itself with the data
+    /// from the outbox without actually storing any meaningful data, possibly
+    /// losing some in the process if things get really bad.
+    ///
+    /// To help deal with this problem we have this function that will skip any
+    /// transfer where all units aside from us sent over `0xFFFF`.
+    pub fn skip_empty_transfers(&mut self) -> usize {
+        let mut retvl = 0;
+        loop {
+            let Some(next) =
+                critical_section::with(|cs| BUFFER_SLOT.lock_in(cs, |tbuf| tbuf.peak(cs)))
+            else {
+                break;
+            };
+
+            let is_empty = next
+                .into_iter()
+                .enumerate()
+                .all(|(idx, n)| n == SENTINEL || idx == (self.id() as usize));
+            if !is_empty {
+                break;
+            }
+            critical_section::with(|cs| BUFFER_SLOT.lock_in(cs, |tbuf| tbuf.pop(cs)));
+            retvl += 1;
+        }
+        retvl
+    }
     /// Pulls data from the multiplayer buffer into the provided data buffers. Returns the number of words read, per player.
     pub fn read_bulk(
         &mut self,
@@ -167,7 +202,7 @@ impl<'a> BulkMultiplayer<'a> {
             let read_this_time = read_raw[0];
             for other in &read_raw[1..] {
                 if *other != read_this_time {
-                    todo!()
+                    unreachable!("BulkMultiplayer::read_bulk should only read a fixed amount from all 4 players!");
                 }
             }
             read += read_this_time;
@@ -176,6 +211,8 @@ impl<'a> BulkMultiplayer<'a> {
         Ok(())
     }
 
+    /// Exits "bulk transfer mode", returning to low-level multiplayer serial
+    /// mode.
     pub fn leave(mut self) -> MultiplayerSerial<'a> {
         self.inner.enable_interrupt(false);
         self.inner.buffer_interrupt = None;
