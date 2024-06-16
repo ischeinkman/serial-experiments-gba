@@ -53,25 +53,39 @@ const TO_CHECK: &[Button] = &[
     Button::L,
     Button::R,
 ];
+const WORDS_PER_BLOCK: usize = 1 + TO_CHECK.len();
+const END_BLOCK_SENTINEL: u16 = 0xE4D;
+const TRUE_WORD: u16 = 0x764e;
+const FALSE_WORD: u16 = 0xFA15;
 
-fn parse_buttons(n: u16) -> Vec<Button> {
+fn parse_buttons(n: &[u16; WORDS_PER_BLOCK]) -> Vec<Button> {
+    assert_eq!(
+        n[WORDS_PER_BLOCK - 1],
+        END_BLOCK_SENTINEL,
+        "Expected: {:X}, actual: {:X} (buff: {:X?})",
+        END_BLOCK_SENTINEL,
+        n[WORDS_PER_BLOCK - 1],
+        n
+    );
     let mut retvl = Vec::new();
     for (idx, btn) in TO_CHECK.iter().enumerate() {
-        if read_bit(n, idx as u8) {
-            retvl.push(*btn);
+        match n[idx] {
+            a if a == TRUE_WORD => retvl.push(*btn),
+            a if a == FALSE_WORD => {}
+            other => {
+                panic!("Found unexpected word: {:x}", other);
+            }
         }
     }
     retvl
 }
 
-fn write_buttons(btns: &ButtonController) -> u16 {
-    let mut n = 0u16;
+fn write_buttons(btns: &ButtonController) -> [u16; WORDS_PER_BLOCK] {
+    let mut n = [END_BLOCK_SENTINEL; WORDS_PER_BLOCK];
     for (idx, btn) in TO_CHECK.iter().enumerate() {
-        let idx = idx as u8;
         let state = btns.is_pressed(*btn);
-        let edge = btns.is_just_pressed(*btn);
-        n = write_bit(n, idx, state);
-        n = write_bit(n, idx + 8, edge);
+        let _edge = btns.is_just_pressed(*btn);
+        n[idx] = if state { TRUE_WORD } else { FALSE_WORD };
     }
     n
 }
@@ -104,17 +118,23 @@ fn multiplayer_test_main(mut _gba: Gba) -> ! {
         btns.update();
         multiplayer_handle.tick().unwrap();
         multiplayer_handle
-            .queue_send(&[write_buttons(&btns)])
+            .queue_send(&write_buttons(&btns))
             .unwrap();
+        println!("Queued send buffer.");
 
         let mut msg = format!("Current loop: {:03} \n", loopcnt,);
+        let mut p0_buff = [0xFFFFu16; WORDS_PER_BLOCK];
+        let mut p1_buff = [0xFFFFu16; WORDS_PER_BLOCK];
+        let mut p2_buff = [0xFFFFu16; WORDS_PER_BLOCK];
+        let mut p3_buff = [0xFFFFu16; WORDS_PER_BLOCK];
         let mut buffers = [
-            &mut [0xFFFFu16; 128][..],
-            &mut [0xFFFFu16; 128][..],
-            &mut [0xFFFFu16; 128][..],
-            &mut [0xFFFFu16; 128][..],
+            p0_buff.as_mut_slice(),
+            p1_buff.as_mut_slice(),
+            p2_buff.as_mut_slice(),
+            p3_buff.as_mut_slice(),
         ];
-        let readcounts = multiplayer_handle.read_bulk(&mut buffers).unwrap();
+        multiplayer_handle.read_all(&mut buffers).unwrap();
+
         for pid in PlayerId::ALL {
             write!(&mut msg, "  -  Player {}", pid as u8).ok();
             if pid == multiplayer_handle.id() {
@@ -123,15 +143,9 @@ fn multiplayer_test_main(mut _gba: Gba) -> ! {
                 write!(&mut msg, "      ").ok();
             }
             write!(&mut msg, ": ?? // ").ok();
-            let read = readcounts[pid as usize];
-            let buf = &buffers[pid as usize][..read];
-            writeln!(&mut msg, "{} - {:?}", read, &buf).ok();
-            for (idx, n) in buf.iter().enumerate() {
-                writeln!(&mut msg, "        {:02}: {:?}", idx, parse_buttons(*n)).ok();
-            }
-        }
-        if readcounts.iter().any(|n| *n > 0) {
-            println!("{}", msg);
+            let buf = &[p0_buff, p1_buff, p2_buff, p3_buff][pid as usize];
+            write!(&mut msg, "{:?}", &buf).ok();
+            writeln!(&mut msg, " => {:?}", parse_buttons(buf)).ok();
         }
         loopcnt += 1;
     }

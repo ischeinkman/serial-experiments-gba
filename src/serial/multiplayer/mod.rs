@@ -180,6 +180,7 @@ pub enum MultiplayerError {
     FailedOkayCheck,
     /// Not all GBAs were ready for the transfer (though the transfer was still attempted)
     FailedReadyCheck,
+    BufferLengthMismatch, 
 }
 
 #[repr(u8)]

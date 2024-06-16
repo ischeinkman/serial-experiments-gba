@@ -302,10 +302,10 @@ mod tests {
                 assert_eq!(res.is_ok(), n < 40);
             }
             let mut outbuff = [
-                &mut [0xFFFF ; OUTBUFF_SIZE][..], 
-                &mut [0xFFFF ; OUTBUFF_SIZE][..], 
-                &mut [0xFFFF ; OUTBUFF_SIZE][..], 
-                &mut [0xFFFF ; OUTBUFF_SIZE][..], 
+                &mut [0xFFFF; OUTBUFF_SIZE][..],
+                &mut [0xFFFF; OUTBUFF_SIZE][..],
+                &mut [0xFFFF; OUTBUFF_SIZE][..],
+                &mut [0xFFFF; OUTBUFF_SIZE][..],
             ];
             assert_eq!(buffer.read_bulk(&mut outbuff, cs), [OUTBUFF_SIZE; 4]);
             assert_eq!(

@@ -50,6 +50,8 @@ static OUTBUFFER: GbaCell<Ringbuffer> = GbaCell::new(Ringbuffer::empty());
 /// blocked until we ourselves also write data to be sent out.
 static BLOCK_TRANSFER_UNTIL_SEND: GbaCell<bool> = GbaCell::new(true);
 
+static TRANSFER_COUNTER: GbaCell<u32> = GbaCell::new(0);
+
 pub struct BulkMultiplayer<'a> {
     inner: MultiplayerSerial<'a>,
 }
@@ -70,6 +72,14 @@ impl From<TransferError> for BulkInitError {
 pub enum BulkTickError {
     /// The serial I/O error bit was flagged during per-frame processing.
     FailedOkayCheck,
+}
+
+impl From<BulkTickError> for MultiplayerError {
+    fn from(value: BulkTickError) -> Self {
+        match value {
+            BulkTickError::FailedOkayCheck => MultiplayerError::FailedOkayCheck,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,6 +144,38 @@ impl<'a> BulkMultiplayer<'a> {
     ) -> Result<[usize; 4], MultiplayerError> {
         critical_section::with(|cs| BUFFER_SLOT.lock_in(cs, |tbuf| Ok(tbuf.read_bulk(buffers, cs))))
     }
+    /// Pulls data from the multiplayer buffer into the provided data buffers,
+    /// looping until all buffers are filled with data.
+    pub fn read_all(&mut self, buffers: &mut [&mut [u16]; 4]) -> Result<(), MultiplayerError> {
+        let to_read = buffers[0].len();
+        for buff in buffers.iter() {
+            if buff.len() != to_read {
+                return Err(MultiplayerError::BufferLengthMismatch);
+            }
+        }
+        let mut read = 0;
+        let [first, second, third, fourth] = buffers;
+        while read < to_read {
+            let cur_buffs = &mut [
+                &mut first[read..],
+                &mut second[read..],
+                &mut third[read..],
+                &mut fourth[read..],
+            ];
+
+            let read_raw = self.read_bulk(cur_buffs)?;
+            let read_this_time = read_raw[0];
+            for other in &read_raw[1..] {
+                if *other != read_this_time {
+                    todo!()
+                }
+            }
+            read += read_this_time;
+            self.tick()?;
+        }
+        Ok(())
+    }
+
     pub fn leave(mut self) -> MultiplayerSerial<'a> {
         self.inner.enable_interrupt(false);
         self.inner.buffer_interrupt = None;
@@ -170,9 +212,17 @@ impl<'a> BulkMultiplayer<'a> {
 /// [MultiplayerSerial] instance by forcing a single data transfer with a
 /// sentinel value.
 fn initialize_id(inner: &mut MultiplayerSerial) -> Result<(), TransferError> {
-    const SENTINEL: u16 = 0xFEAD;
     inner.mark_unready();
     inner.write_send_reg(SENTINEL);
+    let interrupt_handle = unsafe {
+        add_interrupt_handler(Interrupt::Serial, |cs| {
+            TRANSFER_COUNTER.lock_mut_in(cs, |n| {
+                *n = n.wrapping_add(1);
+            });
+        })
+    };
+    inner.enable_interrupt(true);
+    let old_count = TRANSFER_COUNTER.get_copy();
     inner.mark_ready();
     loop {
         {
@@ -190,19 +240,24 @@ fn initialize_id(inner: &mut MultiplayerSerial) -> Result<(), TransferError> {
             };
         }
 
-        let reg_statuses = MultiplayerCommReg::ALL.map(|reg| reg.read());
-        let my_id = MultiplayerSiocnt::get().id();
-        if reg_statuses[my_id as usize] == Some(SENTINEL) {
+        let new_count = TRANSFER_COUNTER.get_copy();
+        if old_count != new_count {
+            let my_id = MultiplayerSiocnt::get().id();
             inner.playerid = Some(my_id);
             break;
         }
     }
+    drop(interrupt_handle);
+    inner.mark_unready();
     Ok(())
 }
 
 /// The interrupt callback called every time the parent unit (with
 /// [PlayerId::P0]) sends data with [MultiplayerSerial::start_transfer].
 fn bulk_mode_interrupt_callback(cs: CriticalSection<'_>) {
+    TRANSFER_COUNTER.lock_mut_in(cs, |n| {
+        *n = n.wrapping_add(1);
+    });
     let siocnt = MultiplayerSiocnt::get();
     let flags = (siocnt.read() & 0xFF) as u8;
     let p0 = MultiplayerCommReg::get(PlayerId::P0).raw_read();
