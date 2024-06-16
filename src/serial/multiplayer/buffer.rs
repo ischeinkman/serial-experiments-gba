@@ -1,7 +1,7 @@
 use core::cell::Cell;
 use core::{ptr, slice};
 
-use agb::external::critical_section::{CriticalSection, Mutex};
+use agb::external::critical_section::{self, CriticalSection, Mutex};
 use alloc::boxed::Box;
 use alloc::vec;
 
@@ -9,6 +9,11 @@ use super::{PlayerId, SENTINEL};
 
 /// Ringbuffer for data transfers in multiplayer mode when using the "bulk
 /// transfer" feature.
+///
+/// Semantically this is actually 4 different ringbuffers that all use the same
+/// read and write indices (and therefore get pushed and popped together as a
+/// single unit). For easy of use we also share a single memory allocation
+/// between them.
 pub struct TransferBuffer {
     /// The head of the memory block. Should always point to an allocation of exactly `4 * self.bufflen` elements.
     buffer: *mut u16,
@@ -89,6 +94,9 @@ impl TransferBuffer {
             write_idx: Mutex::new(Cell::new(0)),
         }
     }
+
+    /// Calculates the pointer to the beginning of a particular player's ring
+    /// buffer memory block.
     fn player_buffer_start(&self, player: PlayerId) -> *mut u16 {
         // #SAFETY
         //
@@ -98,6 +106,15 @@ impl TransferBuffer {
 
         unsafe { self.buffer.add(self.bufflen * player as usize) }
     }
+
+    /// Pushes a single new transfer's worth of data to the ring buffer.
+    ///
+    /// Each of the `u16` arguments corresponds to a single word sent by another
+    /// peer in the session; the `flags` argument contains any metadata bits
+    /// that may have been tripped (which would generally correspond to the
+    /// bottom half of the SIOCNT register). We also take a [CriticalSection] as
+    /// an argument to better imply that we should be running in the `SERIAL
+    /// INTERRUPT` context.
     pub fn push(
         &self,
         p0: u16,
@@ -128,17 +145,23 @@ impl TransferBuffer {
     /// Pops a single data transfer from the head of the ring buffer.
     ///
     /// Returns the words in the transfer, or `None` if the buffer is empty.
-    pub fn pop(&self, cs: CriticalSection) -> Option<[u16; 4]> {
-        let retvl = self.peak(cs);
-        let raw_ridx = self.read_idx.borrow(cs).get();
-        self.read_idx
-            .borrow(cs)
-            .replace((raw_ridx + 1) % (2 * self.bufflen));
-        retvl
+    pub fn pop(&self) -> Option<[u16; 4]> {
+        critical_section::with(|cs| {
+            let retvl = self.peak_in(cs);
+            let raw_ridx = self.read_idx.borrow(cs).get();
+            self.read_idx
+                .borrow(cs)
+                .replace((raw_ridx + 1) % (2 * self.bufflen));
+            retvl
+        })
     }
 
-    /// Peaks at the next data in the ringbuffer without consume it.
-    pub fn peak(&self, cs: CriticalSection) -> Option<[u16; 4]> {
+    /// Peaks at the next data in the ringbuffer without consuming it.
+    pub fn peak(&self) -> Option<[u16; 4]> {
+        critical_section::with(|cs| self.peak_in(cs))
+    }
+
+    fn peak_in(&self, cs: CriticalSection) -> Option<[u16; 4]> {
         let raw_ridx = self.read_idx.borrow(cs).get();
         let raw_widx = self.write_idx.borrow(cs).get();
         if is_empty(raw_ridx, raw_widx, self.bufflen) {
@@ -164,16 +187,18 @@ impl TransferBuffer {
     /// This function may overwrite the data in `buffers` past the point where
     /// it reports having read until; as such, all data in `buffers` can be
     /// considered unspecified as soon as it is passed to this function.
-    pub fn read_bulk(&self, buffers: &mut [&mut [u16]; 4], cs: CriticalSection<'_>) -> [usize; 4] {
-        let ret = PlayerId::ALL.map(move |pid| {
-            let buffer = &mut buffers.as_mut()[pid as usize];
-            self.read_bulk_for_inner(cs, pid, buffer.as_mut())
-        });
-        let inc = ret.into_iter().min().unwrap_or(0);
-        let prev_ridx = self.read_idx.borrow(cs).get();
-        let next = (prev_ridx + inc) % (2 * self.bufflen);
-        self.read_idx.borrow(cs).set(next);
-        [inc; 4]
+    pub fn read_bulk(&self, buffers: &mut [&mut [u16]; 4]) -> [usize; 4] {
+        critical_section::with(|cs| {
+            let ret = PlayerId::ALL.map(move |pid| {
+                let buffer = &mut buffers.as_mut()[pid as usize];
+                self.read_bulk_for_inner(cs, pid, buffer.as_mut())
+            });
+            let inc = ret.into_iter().min().unwrap_or(0);
+            let prev_ridx = self.read_idx.borrow(cs).get();
+            let next = (prev_ridx + inc) % (2 * self.bufflen);
+            self.read_idx.borrow(cs).set(next);
+            [inc; 4]
+        })
     }
     fn read_bulk_for_inner(
         &self,
@@ -267,33 +292,31 @@ mod tests {
                 assert_eq!(res.is_err(), n >= BUFFER_SIZE, "N = {n}");
             });
         }
-        critical_section::with(|cs| {
-            for n in 0..BUFFER_SIZE {
-                let next = buffer.pop(cs);
+        for n in 0..BUFFER_SIZE {
+            let next = buffer.pop();
+            assert_eq!(
+                next,
+                Some([
+                    (n as u16) + 0x0000,
+                    (n as u16) + 0x1000,
+                    (n as u16) + 0x2000,
+                    (n as u16) + 0x3000,
+                ])
+            );
+        }
+        assert_eq!(buffer.pop(), None);
+        unsafe {
+            let raw_mem = slice::from_raw_parts(buffer.buffer as *const _, buffer.bufflen * 4);
+            for rawidx in 0..(BUFFER_SIZE * 4) {
+                let player = (rawidx / BUFFER_SIZE) as u16;
+                let offset = (rawidx % BUFFER_SIZE) as u16;
+                let expected = (0x1000u16 * player) + offset;
                 assert_eq!(
-                    next,
-                    Some([
-                        (n as u16) + 0x0000,
-                        (n as u16) + 0x1000,
-                        (n as u16) + 0x2000,
-                        (n as u16) + 0x3000,
-                    ])
+                    raw_mem[rawidx], expected,
+                    "Error at index: {rawidx} (Player = {player}, offset = {offset})"
                 );
             }
-            assert_eq!(buffer.pop(cs), None);
-            unsafe {
-                let raw_mem = slice::from_raw_parts(buffer.buffer as *const _, buffer.bufflen * 4);
-                for rawidx in 0..(BUFFER_SIZE * 4) {
-                    let player = (rawidx / BUFFER_SIZE) as u16;
-                    let offset = (rawidx % BUFFER_SIZE) as u16;
-                    let expected = (0x1000u16 * player) + offset;
-                    assert_eq!(
-                        raw_mem[rawidx], expected,
-                        "Error at index: {rawidx} (Player = {player}, offset = {offset})"
-                    );
-                }
-            }
-        })
+        }
     }
     #[test_case]
     fn test_buffer_bulk(_gba: &mut Gba) {
@@ -301,40 +324,38 @@ mod tests {
         const OUTBUFF_SIZE: usize = 3;
 
         let buffer = TransferBuffer::new(BUFFER_SIZE);
-        critical_section::with(|cs| {
-            for n in 30..42 {
-                let res = buffer.push(n + 100, n + 200, n + 300, n + 400, n as u8, cs);
-                assert_eq!(res.is_ok(), n < 40);
-            }
-            let mut outbuff = [
-                &mut [0xFFFF; OUTBUFF_SIZE][..],
-                &mut [0xFFFF; OUTBUFF_SIZE][..],
-                &mut [0xFFFF; OUTBUFF_SIZE][..],
-                &mut [0xFFFF; OUTBUFF_SIZE][..],
-            ];
-            assert_eq!(buffer.read_bulk(&mut outbuff, cs), [OUTBUFF_SIZE; 4]);
-            assert_eq!(
-                outbuff,
-                PlayerId::ALL.map(|pid| [30, 31, 32].map(|n| n + (100 * (pid as u16 + 1))))
-            );
-            assert_eq!(buffer.read_bulk(&mut outbuff, cs), [OUTBUFF_SIZE; 4]);
-            assert_eq!(
-                outbuff,
-                PlayerId::ALL.map(|pid| [33, 34, 35].map(|n| n + (100 * (pid as u16 + 1))))
-            );
-            assert_eq!(buffer.read_bulk(&mut outbuff, cs), [OUTBUFF_SIZE; 4]);
-            assert_eq!(
-                outbuff,
-                PlayerId::ALL.map(|pid| [36, 37, 38].map(|n| n + (100 * (pid as u16 + 1))))
-            );
-            assert_eq!(
-                buffer.read_bulk(&mut outbuff, cs),
-                [(BUFFER_SIZE % OUTBUFF_SIZE); 4]
-            );
-            assert_eq!(
-                outbuff.map(|slc| &slc[..(BUFFER_SIZE % OUTBUFF_SIZE)]),
-                PlayerId::ALL.map(|pid| [39].map(|n| n + (100 * (pid as u16 + 1))))
-            );
-        })
+        for n in 30..42 {
+            let res = buffer.push(n + 100, n + 200, n + 300, n + 400, n as u8, cs);
+            assert_eq!(res.is_ok(), n < 40);
+        }
+        let mut outbuff = [
+            &mut [0xFFFF; OUTBUFF_SIZE][..],
+            &mut [0xFFFF; OUTBUFF_SIZE][..],
+            &mut [0xFFFF; OUTBUFF_SIZE][..],
+            &mut [0xFFFF; OUTBUFF_SIZE][..],
+        ];
+        assert_eq!(buffer.read_bulk(&mut outbuff), [OUTBUFF_SIZE; 4]);
+        assert_eq!(
+            outbuff,
+            PlayerId::ALL.map(|pid| [30, 31, 32].map(|n| n + (100 * (pid as u16 + 1))))
+        );
+        assert_eq!(buffer.read_bulk(&mut outbuff), [OUTBUFF_SIZE; 4]);
+        assert_eq!(
+            outbuff,
+            PlayerId::ALL.map(|pid| [33, 34, 35].map(|n| n + (100 * (pid as u16 + 1))))
+        );
+        assert_eq!(buffer.read_bulk(&mut outbuff), [OUTBUFF_SIZE; 4]);
+        assert_eq!(
+            outbuff,
+            PlayerId::ALL.map(|pid| [36, 37, 38].map(|n| n + (100 * (pid as u16 + 1))))
+        );
+        assert_eq!(
+            buffer.read_bulk(&mut outbuff),
+            [(BUFFER_SIZE % OUTBUFF_SIZE); 4]
+        );
+        assert_eq!(
+            outbuff.map(|slc| &slc[..(BUFFER_SIZE % OUTBUFF_SIZE)]),
+            PlayerId::ALL.map(|pid| [39].map(|n| n + (100 * (pid as u16 + 1))))
+        );
     }
 }

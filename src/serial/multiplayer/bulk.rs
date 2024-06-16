@@ -154,9 +154,7 @@ impl<'a> BulkMultiplayer<'a> {
     pub fn skip_empty_transfers(&mut self) -> usize {
         let mut retvl = 0;
         loop {
-            let Some(next) =
-                critical_section::with(|cs| BUFFER_SLOT.lock_in(cs, |tbuf| tbuf.peak(cs)))
-            else {
+            let Some(next) = BUFFER_SLOT.lock(|tbuf| tbuf.peak()) else {
                 break;
             };
 
@@ -167,7 +165,7 @@ impl<'a> BulkMultiplayer<'a> {
             if !is_empty {
                 break;
             }
-            critical_section::with(|cs| BUFFER_SLOT.lock_in(cs, |tbuf| tbuf.pop(cs)));
+            BUFFER_SLOT.lock(|tbuf| tbuf.pop());
             retvl += 1;
         }
         retvl
@@ -177,7 +175,7 @@ impl<'a> BulkMultiplayer<'a> {
         &mut self,
         buffers: &mut [&mut [u16]; 4],
     ) -> Result<[usize; 4], MultiplayerError> {
-        critical_section::with(|cs| BUFFER_SLOT.lock_in(cs, |tbuf| Ok(tbuf.read_bulk(buffers, cs))))
+        BUFFER_SLOT.lock(|tbuf| Ok(tbuf.read_bulk(buffers)))
     }
     /// Pulls data from the multiplayer buffer into the provided data buffers,
     /// looping until all buffers are filled with data.
